@@ -17,10 +17,7 @@ POSTGRES_HOST = os.getenv("POSTGRES_HOST", "db")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "tcempei")
 
-DEFAULT_DATABASE_URL = (
-    f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@"
-    f"{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-)
+DEFAULT_DATABASE_URL = f"sqlite+pysqlite:///{DATA_DIR / 'tcempei.db'}"
 
 DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 ALGORITHM_VERSION = "1.0.0"

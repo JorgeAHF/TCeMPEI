@@ -9,7 +9,7 @@ Sistema local para gestión histórica y análisis de tirantes de puentes atiran
 - `data/`: Almacenamiento local para archivos crudos, normalizados y adjuntos.
 
 ## Uso rápido
-1. Crear entorno `.env` opcional con `DATABASE_URL`, `POSTGRES_*` y `DATA_DIR` (por defecto usa PostgreSQL en `postgresql+psycopg2://postgres:postgres@db:5432/tcempei`).
+1. Crear entorno `.env` opcional con `DATABASE_URL`, `POSTGRES_*` y `DATA_DIR`. Por defecto usa SQLite en `data/tcempei.db`; si prefieres PostgreSQL, define `DATABASE_URL` (por ejemplo `postgresql+psycopg2://postgres:postgres@db:5432/tcempei`).
 2. Construir y levantar con Docker Compose:
    ```bash
    docker-compose up --build
@@ -37,7 +37,7 @@ Sistema local para gestión histórica y análisis de tirantes de puentes atiran
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python app/main.py
+python -m app.main
 ```
 
 ## Pruebas

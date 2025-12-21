@@ -1,16 +1,22 @@
 import os
+import sys
 from datetime import datetime
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import dash
 from dash import Dash, Input, Output, State, dcc, html, dash_table, no_update
 
 from sqlalchemy import select
 
-from .auth_service import ensure_default_admin, hash_password, verify_password
-from .config import ensure_data_dirs
-from .db import Base, get_engine, get_session_local
-from .models import Bridge, Cable, CableStateVersion, Sensor, SensorInstallation, StrandType, User
-from .services import ValidationError, create_cable_state_version, register_installation
+from app.auth_service import ensure_default_admin, hash_password, verify_password
+from app.config import ensure_data_dirs
+from app.db import Base, get_engine, get_session_local
+from app.models import Bridge, Cable, CableStateVersion, Sensor, SensorInstallation, StrandType, User
+from app.services import ValidationError, create_cable_state_version, register_installation
 
 ensure_data_dirs()
 SessionLocal = get_session_local()
