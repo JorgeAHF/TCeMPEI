@@ -176,6 +176,38 @@ def test_register_installation_rejects_overlap():
         )
 
 
+def test_register_installation_rejects_overlap_with_open_range():
+    url = "sqlite+pysqlite:///:memory:"
+    engine = get_engine(url)
+    Base.metadata.create_all(engine)
+    SessionLocal = get_session_local(url, engine=engine)
+    session = SessionLocal()
+    user, bridge, cable, strand_type = seed_basic(session)
+
+    session.add(
+        SensorInstallation(
+            sensor_id=1,
+            cable_id=cable.id,
+            installed_from=datetime(2024, 3, 1),
+            installed_to=None,
+            height_m=6.0,
+        )
+    )
+    session.commit()
+
+    with pytest.raises(ValidationError):
+        register_installation(
+            SensorInstallation(
+                sensor_id=1,
+                cable_id=cable.id,
+                installed_from=datetime(2024, 5, 1),
+                installed_to=datetime(2024, 6, 1),
+                height_m=7.0,
+            ),
+            session=session,
+        )
+
+
 def test_create_cable_state_version_guards_open_ranges():
     url = "sqlite+pysqlite:///:memory:"
     engine = get_engine(url)
@@ -256,6 +288,113 @@ def test_create_cable_state_version_validates_antivandalic():
                 design_tension_tf=500.0,
                 antivandalic_enabled=True,
                 antivandalic_length_m=None,
+            ),
+            session=session,
+        )
+
+
+def test_create_cable_state_version_blocks_overlaps():
+    url = "sqlite+pysqlite:///:memory:"
+    engine = get_engine(url)
+    Base.metadata.create_all(engine)
+    SessionLocal = get_session_local(url, engine=engine)
+    session = SessionLocal()
+    user, bridge, cable, strand_type = seed_basic(session)
+
+    session.add(
+        CableStateVersion(
+            cable_id=cable.id,
+            valid_from=datetime(2023, 1, 1),
+            valid_to=datetime(2023, 12, 31),
+            length_effective_m=100.0,
+            strands_total=10,
+            strands_active=8,
+            strands_inactive=2,
+            strand_type_id=strand_type.id,
+            diametro_mm=15.2,
+            area_mm2=140.0,
+            e_mpa=200000,
+            mu_total_kg_m=120.0,
+            mu_active_basis_kg_m=100.0,
+            design_tension_tf=500.0,
+            antivandalic_enabled=False,
+        )
+    )
+    session.commit()
+
+    with pytest.raises(ValidationError):
+        create_cable_state_version(
+            CableStateVersion(
+                cable_id=cable.id,
+                valid_from=datetime(2023, 6, 1),
+                valid_to=datetime(2024, 6, 1),
+                length_effective_m=101.0,
+                strands_total=10,
+                strands_active=8,
+                strands_inactive=2,
+                strand_type_id=strand_type.id,
+                diametro_mm=15.2,
+                area_mm2=140.0,
+                e_mpa=200000,
+                mu_total_kg_m=121.0,
+                mu_active_basis_kg_m=101.0,
+                design_tension_tf=505.0,
+                antivandalic_enabled=False,
+            ),
+            session=session,
+        )
+
+
+def test_create_cable_state_version_validates_antivandalic_length_bounds():
+    url = "sqlite+pysqlite:///:memory:"
+    engine = get_engine(url)
+    Base.metadata.create_all(engine)
+    SessionLocal = get_session_local(url, engine=engine)
+    session = SessionLocal()
+    user, bridge, cable, strand_type = seed_basic(session)
+
+    with pytest.raises(ValidationError):
+        create_cable_state_version(
+            CableStateVersion(
+                cable_id=cable.id,
+                valid_from=datetime(2024, 1, 1),
+                valid_to=None,
+                length_effective_m=100.0,
+                strands_total=10,
+                strands_active=8,
+                strands_inactive=2,
+                strand_type_id=strand_type.id,
+                diametro_mm=15.2,
+                area_mm2=140.0,
+                e_mpa=200000,
+                mu_total_kg_m=120.0,
+                mu_active_basis_kg_m=100.0,
+                design_tension_tf=500.0,
+                antivandalic_enabled=True,
+                antivandalic_length_m=-1.0,
+            ),
+            session=session,
+        )
+
+    with pytest.raises(ValidationError):
+        create_cable_state_version(
+            CableStateVersion(
+                cable_id=cable.id,
+                valid_from=datetime(2024, 1, 1),
+                valid_to=None,
+                length_effective_m=10.0,
+                strands_total=10,
+                strands_active=8,
+                strands_inactive=2,
+                strand_type_id=strand_type.id,
+                diametro_mm=15.2,
+                area_mm2=140.0,
+                e_mpa=200000,
+                mu_total_kg_m=120.0,
+                mu_active_basis_kg_m=100.0,
+                design_tension_tf=500.0,
+                antivandalic_enabled=True,
+                antivandalic_length_m=20.0,
             ),
             session=session,
         )

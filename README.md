@@ -21,6 +21,17 @@ Sistema local para gestión histórica y análisis de tirantes de puentes atiran
    ```
    Usa `DEFAULT_ADMIN_EMAIL` y `DEFAULT_ADMIN_PASSWORD` para personalizar las credenciales iniciales.
 
+### Comandos operativos
+- Aplicar migraciones (usa la `DATABASE_URL` configurada, dentro del contenedor o entorno virtual):
+  ```bash
+  alembic upgrade head
+  ```
+- Crear o asegurar el administrador por defecto:
+  ```bash
+  python -m app.cli ensure-default-admin --email admin@example.com --password admin123
+  ```
+- Iniciar sesión en la UI: abre http://localhost:8050, ingresa el correo y contraseña definidos en el paso anterior y usa el botón **Entrar**. Si las credenciales son válidas, la app mostrará el dashboard y almacenará el usuario en la sesión de cliente.
+
 ### Sin Docker
 ```bash
 python -m venv .venv

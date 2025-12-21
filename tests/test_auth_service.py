@@ -1,8 +1,14 @@
 import pytest
 
-from app.auth_service import ensure_default_admin, hash_password, verify_password
+from app.auth_service import (
+    create_user,
+    ensure_default_admin,
+    hash_password,
+    verify_password,
+)
 from app.db import Base, get_engine, get_session_local
 from app.models import User
+from app.validation_service import ValidationError
 
 
 def setup_session():
@@ -44,3 +50,12 @@ def test_hash_and_verify_password_roundtrip():
     assert hashed != "plaintext"
     assert verify_password("plaintext", hashed)
     assert not verify_password("wrong", hashed)
+
+
+def test_create_user_rejects_duplicate_email():
+    session = setup_session()
+
+    create_user(email="dup@test.com", hashed_password="abc", session=session)
+
+    with pytest.raises(ValidationError):
+        create_user(email="dup@test.com", hashed_password="xyz", session=session)
