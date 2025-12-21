@@ -20,13 +20,13 @@ app = Dash(__name__, suppress_callback_exceptions=True)
 server = app.server
 
 NAV_ITEMS = [
-    "Catálogo",
-    "Adquisiciones",
-    "Pesajes directos",
-    "Análisis",
-    "Histórico",
-    "Semáforo",
-    "Admin",
+    {"label": "Catálogo", "path": "/catalogo"},
+    {"label": "Adquisiciones", "path": "/adquisiciones"},
+    {"label": "Pesajes directos", "path": "/pesajes-directos"},
+    {"label": "Análisis", "path": "/analisis"},
+    {"label": "Histórico", "path": "/historico"},
+    {"label": "Semáforo", "path": "/semaforo"},
+    {"label": "Admin", "path": "/admin"},
 ]
 
 
@@ -286,10 +286,10 @@ def render_installation_form():
 
 def make_sidebar():
     return html.Div(
-        [html.H2("CeMPEI | IMT"), html.H4("Gestión de tirantes"), html.Hr()] +
-        [
+        [html.H2("CeMPEI | IMT"), html.H4("Gestión de tirantes"), html.Hr()]
+        + [
             html.Div(
-                dcc.Link(item, href=f"/{item.lower().replace(' ', '-')}", className="nav-link"),
+                dcc.Link(item["label"], href=item["path"], className="nav-link"),
                 className="nav-item",
             )
             for item in NAV_ITEMS
