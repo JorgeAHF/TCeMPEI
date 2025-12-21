@@ -14,6 +14,5 @@ def get_engine(url: str | None = None, echo: bool = False):
 
 def get_session_local(url: str | None = None, echo: bool = False):
     engine = get_engine(url=url, echo=echo)
-    Base.metadata.create_all(engine)
     return sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
