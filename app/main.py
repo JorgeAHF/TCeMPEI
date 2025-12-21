@@ -1,16 +1,22 @@
 import os
+import sys
 from datetime import datetime
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import dash
 from dash import Dash, Input, Output, State, dcc, html, dash_table, no_update
 
 from sqlalchemy import select
 
-from .auth_service import ensure_default_admin, hash_password, verify_password
-from .config import ensure_data_dirs
-from .db import Base, get_engine, get_session_local
-from .models import Bridge, Cable, CableStateVersion, Sensor, SensorInstallation, StrandType, User
-from .services import ValidationError, create_cable_state_version, register_installation
+from app.auth_service import ensure_default_admin, hash_password, verify_password
+from app.config import ensure_data_dirs
+from app.db import Base, get_engine, get_session_local
+from app.models import Bridge, Cable, CableStateVersion, Sensor, SensorInstallation, StrandType, User
+from app.services import ValidationError, create_cable_state_version, register_installation
 
 ensure_data_dirs()
 SessionLocal = get_session_local()
@@ -20,13 +26,13 @@ app = Dash(__name__, suppress_callback_exceptions=True)
 server = app.server
 
 NAV_ITEMS = [
-    "Catálogo",
-    "Adquisiciones",
-    "Pesajes directos",
-    "Análisis",
-    "Histórico",
-    "Semáforo",
-    "Admin",
+    {"label": "Catálogo", "path": "/catalogo"},
+    {"label": "Adquisiciones", "path": "/adquisiciones"},
+    {"label": "Pesajes directos", "path": "/pesajes-directos"},
+    {"label": "Análisis", "path": "/analisis"},
+    {"label": "Histórico", "path": "/historico"},
+    {"label": "Semáforo", "path": "/semaforo"},
+    {"label": "Admin", "path": "/admin"},
 ]
 
 
@@ -286,10 +292,10 @@ def render_installation_form():
 
 def make_sidebar():
     return html.Div(
-        [html.H2("CeMPEI | IMT"), html.H4("Gestión de tirantes"), html.Hr()] +
-        [
+        [html.H2("CeMPEI | IMT"), html.H4("Gestión de tirantes"), html.Hr()]
+        + [
             html.Div(
-                dcc.Link(item, href=f"/{item.lower().replace(' ', '-')}", className="nav-link"),
+                dcc.Link(item["label"], href=item["path"], className="nav-link"),
                 className="nav-item",
             )
             for item in NAV_ITEMS
@@ -369,7 +375,7 @@ def render_layout():
         [
             dcc.Location(id="url"),
             dcc.Store(id="current-user", storage_type="session"),
-            html.Div(id="page"),
+            html.Div(id="page", children=render_login()),
         ]
     )
 
@@ -407,7 +413,7 @@ def render_app_shell():
                                 ],
                                 className="topbar",
                             ),
-                            html.Div(id="content"),
+                            html.Div(id="content", children=build_content("/")),
                         ],
                         className="content-area",
                     ),
