@@ -15,6 +15,11 @@ Sistema local para gestión histórica y análisis de tirantes de puentes atiran
    docker-compose up --build
    ```
 3. La UI estará en http://localhost:8050.
+4. Después de aplicar migraciones o de crear la base, crea el usuario administrador por defecto:
+   ```bash
+   python -m app.cli ensure-default-admin
+   ```
+   Usa `DEFAULT_ADMIN_EMAIL` y `DEFAULT_ADMIN_PASSWORD` para personalizar las credenciales iniciales.
 
 ### Sin Docker
 ```bash
