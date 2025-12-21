@@ -375,7 +375,7 @@ def render_layout():
         [
             dcc.Location(id="url"),
             dcc.Store(id="current-user", storage_type="session"),
-            html.Div(id="page"),
+            html.Div(id="page", children=render_login()),
         ]
     )
 
@@ -413,7 +413,7 @@ def render_app_shell():
                                 ],
                                 className="topbar",
                             ),
-                            html.Div(id="content"),
+                            html.Div(id="content", children=build_content("/")),
                         ],
                         className="content-area",
                     ),
