@@ -1,20 +1,26 @@
-version: '3.9'
 services:
   db:
     image: postgres:15
     environment:
-      POSTGRES_PASSWORD: postgres
       POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: tcempei
     volumes:
       - db-data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tcempei"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   web:
     build: .
+    command: python -m app.main
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/tcempei
     ports:
@@ -22,6 +28,7 @@ services:
     volumes:
       - .:/app
       - ./data:/data
+    restart: unless-stopped
 
 volumes:
   db-data:

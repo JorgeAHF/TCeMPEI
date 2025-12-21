@@ -56,16 +56,16 @@ class StrandType(Base, Timestamped):
     nombre: Mapped[str] = mapped_column(String, nullable=False)
     diametro_mm: Mapped[float] = mapped_column(Float, nullable=False)
     area_mm2: Mapped[float] = mapped_column(Float, nullable=False)
-    E_MPa: Mapped[float] = mapped_column(Float, nullable=False)
-    Fu_default: Mapped[float] = mapped_column(Float, nullable=False)
+    e_mpa: Mapped[float] = mapped_column(Float, nullable=False)
+    fu_default: Mapped[float] = mapped_column(Float, nullable=False)
     mu_por_toron_kg_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     notas: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         CheckConstraint("diametro_mm > 0"),
         CheckConstraint("area_mm2 > 0"),
-        CheckConstraint("E_MPa > 0"),
-        CheckConstraint("Fu_default > 0"),
+        CheckConstraint("e_mpa > 0"),
+        CheckConstraint("fu_default > 0"),
     )
 
 
@@ -95,12 +95,12 @@ class CableStateVersion(Base, Timestamped):
         CheckConstraint("strands_inactive <= strands_total", name="strands_inactive_le_total"),
         CheckConstraint("diametro_mm > 0"),
         CheckConstraint("area_mm2 > 0"),
-        CheckConstraint("E_MPa > 0"),
+        CheckConstraint("e_mpa > 0"),
         CheckConstraint("design_tension_tf > 0"),
         CheckConstraint("mu_total_kg_m > 0"),
         CheckConstraint("mu_active_basis_kg_m > 0"),
         CheckConstraint(
-            "(antivandalic_enabled = 0) OR (antivandalic_length_m IS NOT NULL)",
+            "(NOT antivandalic_enabled) OR (antivandalic_length_m IS NOT NULL)",
             name="antivandalic_length_required",
         ),
     )
@@ -117,11 +117,11 @@ class CableStateVersion(Base, Timestamped):
     strand_type_id: Mapped[int] = mapped_column(ForeignKey("strand_types.id"), nullable=False)
     diametro_mm: Mapped[float] = mapped_column(Float, nullable=False)
     area_mm2: Mapped[float] = mapped_column(Float, nullable=False)
-    E_MPa: Mapped[float] = mapped_column(Float, nullable=False)
+    e_mpa: Mapped[float] = mapped_column(Float, nullable=False)
     mu_total_kg_m: Mapped[float] = mapped_column(Float, nullable=False)
     mu_active_basis_kg_m: Mapped[float] = mapped_column(Float, nullable=False)
     design_tension_tf: Mapped[float] = mapped_column(Float, nullable=False)
-    Fu_override: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fu_override: Mapped[float | None] = mapped_column(Float, nullable=True)
     antivandalic_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     antivandalic_length_m: Mapped[float | None] = mapped_column(Float)
     source: Mapped[str | None] = mapped_column(String)
