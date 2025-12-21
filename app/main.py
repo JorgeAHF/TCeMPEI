@@ -1,4 +1,3 @@
-import hashlib
 import os
 from datetime import datetime
 
@@ -7,6 +6,7 @@ from dash import Dash, Input, Output, State, dcc, html, dash_table, no_update
 
 from sqlalchemy import select
 
+from .auth_service import ensure_default_admin, hash_password, verify_password
 from .config import ensure_data_dirs
 from .db import Base, get_engine, get_session_local
 from .models import Bridge, Cable, CableStateVersion, Sensor, SensorInstallation, StrandType, User
@@ -28,30 +28,6 @@ NAV_ITEMS = [
     "Semáforo",
     "Admin",
 ]
-
-
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-
-def verify_password(candidate: str, hashed: str) -> bool:
-    return hash_password(candidate) == hashed
-
-
-def ensure_default_admin() -> None:
-    default_email = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@example.com")
-    default_password = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
-    with SessionLocal() as session:
-        if session.scalars(select(User)).first():
-            return
-        session.add(
-            User(
-                email=default_email,
-                hashed_password=hash_password(default_password),
-                role="Admin",
-            )
-        )
-        session.commit()
 
 
 ensure_default_admin()
