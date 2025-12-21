@@ -13,7 +13,14 @@ from app.models import (
     Bridge,
     User,
 )
-from app.services import select_cable_state_for_date, select_k_calibration, validate_installation_overlap
+from app.services import (
+    ValidationError,
+    create_cable_state_version,
+    register_installation,
+    select_cable_state_for_date,
+    select_k_calibration,
+    validate_installation_overlap,
+)
 
 
 def seed_basic(session: Session):
@@ -21,7 +28,7 @@ def seed_basic(session: Session):
     bridge = Bridge(nombre="Puente 1")
     cable = Cable(bridge=bridge, nombre_en_puente="C1")
     strand_type = StrandType(
-        nombre="7T", diametro_mm=15.2, area_mm2=140.0, E_MPa=200000, Fu_default=250.0
+        nombre="7T", diametro_mm=15.2, area_mm2=140.0, e_mpa=200000, fu_default=250.0
     )
     session.add_all([user, bridge, cable, strand_type])
     session.flush()
@@ -32,7 +39,7 @@ def test_select_cable_state_prefers_open_range(tmp_path):
     url = "sqlite+pysqlite:///:memory:"
     engine = get_engine(url)
     Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url)
+    SessionLocal = get_session_local(url, engine=engine)
     session = SessionLocal()
     user, bridge, cable, strand_type = seed_basic(session)
 
@@ -47,7 +54,7 @@ def test_select_cable_state_prefers_open_range(tmp_path):
         strand_type_id=strand_type.id,
         diametro_mm=15.2,
         area_mm2=140.0,
-        E_MPa=200000,
+        e_mpa=200000,
         mu_total_kg_m=120.0,
         mu_active_basis_kg_m=100.0,
         design_tension_tf=500.0,
@@ -63,7 +70,7 @@ def test_select_cable_state_prefers_open_range(tmp_path):
         strand_type_id=strand_type.id,
         diametro_mm=15.2,
         area_mm2=140.0,
-        E_MPa=200000,
+        e_mpa=200000,
         mu_total_kg_m=125.0,
         mu_active_basis_kg_m=105.0,
         design_tension_tf=520.0,
@@ -82,7 +89,7 @@ def test_select_k_calibration_chooses_valid_range():
     url = "sqlite+pysqlite:///:memory:"
     engine = get_engine(url)
     Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url)
+    SessionLocal = get_session_local(url, engine=engine)
     session = SessionLocal()
     user, bridge, cable, strand_type = seed_basic(session)
 
@@ -117,7 +124,7 @@ def test_validate_installation_overlap():
     url = "sqlite+pysqlite:///:memory:"
     engine = get_engine(url)
     Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url)
+    SessionLocal = get_session_local(url, engine=engine)
     session = SessionLocal()
     user, bridge, cable, strand_type = seed_basic(session)
 
@@ -135,4 +142,121 @@ def test_validate_installation_overlap():
         session, 1, datetime(2022, 3, 1), datetime(2022, 4, 1)
     )
     assert validate_installation_overlap(session, 1, datetime(2023, 1, 1), None)
+
+
+def test_register_installation_rejects_overlap():
+    url = "sqlite+pysqlite:///:memory:"
+    engine = get_engine(url)
+    Base.metadata.create_all(engine)
+    SessionLocal = get_session_local(url, engine=engine)
+    session = SessionLocal()
+    user, bridge, cable, strand_type = seed_basic(session)
+
+    session.add(
+        SensorInstallation(
+            sensor_id=1,
+            cable_id=cable.id,
+            installed_from=datetime(2024, 1, 1),
+            installed_to=datetime(2024, 6, 1),
+            height_m=6.0,
+        )
+    )
+    session.commit()
+
+    with pytest.raises(ValidationError):
+        register_installation(
+            SensorInstallation(
+                sensor_id=1,
+                cable_id=cable.id,
+                installed_from=datetime(2024, 5, 1),
+                installed_to=None,
+                height_m=7.0,
+            ),
+            session=session,
+        )
+
+
+def test_create_cable_state_version_guards_open_ranges():
+    url = "sqlite+pysqlite:///:memory:"
+    engine = get_engine(url)
+    Base.metadata.create_all(engine)
+    SessionLocal = get_session_local(url, engine=engine)
+    session = SessionLocal()
+    user, bridge, cable, strand_type = seed_basic(session)
+
+    existing = CableStateVersion(
+        cable_id=cable.id,
+        valid_from=datetime(2024, 1, 1),
+        valid_to=None,
+        length_effective_m=100.0,
+        strands_total=10,
+        strands_active=8,
+        strands_inactive=2,
+        strand_type_id=strand_type.id,
+        diametro_mm=15.2,
+        area_mm2=140.0,
+        e_mpa=200000,
+        mu_total_kg_m=120.0,
+        mu_active_basis_kg_m=100.0,
+        design_tension_tf=500.0,
+        antivandalic_enabled=True,
+        antivandalic_length_m=10.0,
+    )
+    session.add(existing)
+    session.commit()
+
+    with pytest.raises(ValidationError):
+        create_cable_state_version(
+            CableStateVersion(
+                cable_id=cable.id,
+                valid_from=datetime(2024, 7, 1),
+                valid_to=None,
+                length_effective_m=101.0,
+                strands_total=10,
+                strands_active=8,
+                strands_inactive=2,
+                strand_type_id=strand_type.id,
+                diametro_mm=15.2,
+                area_mm2=140.0,
+                e_mpa=200000,
+                mu_total_kg_m=121.0,
+                mu_active_basis_kg_m=101.0,
+                design_tension_tf=505.0,
+                antivandalic_enabled=True,
+                antivandalic_length_m=20.0,
+            ),
+            session=session,
+        )
+
+
+def test_create_cable_state_version_validates_antivandalic():
+    url = "sqlite+pysqlite:///:memory:"
+    engine = get_engine(url)
+    Base.metadata.create_all(engine)
+    SessionLocal = get_session_local(url, engine=engine)
+    session = SessionLocal()
+    user, bridge, cable, strand_type = seed_basic(session)
+
+    with pytest.raises(ValidationError):
+        create_cable_state_version(
+            CableStateVersion(
+                cable_id=cable.id,
+                valid_from=datetime(2024, 1, 1),
+                valid_to=None,
+                length_effective_m=100.0,
+                strands_total=10,
+                strands_active=8,
+                strands_inactive=2,
+                strand_type_id=strand_type.id,
+                diametro_mm=15.2,
+                area_mm2=140.0,
+                e_mpa=200000,
+                mu_total_kg_m=120.0,
+                mu_active_basis_kg_m=100.0,
+                design_tension_tf=500.0,
+                antivandalic_enabled=True,
+                antivandalic_length_m=None,
+            ),
+            session=session,
+        )
 
