@@ -17,9 +17,12 @@ POSTGRES_HOST = os.getenv("POSTGRES_HOST", "db")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "tcempei")
 
-DEFAULT_DATABASE_URL = f"sqlite+pysqlite:///{DATA_DIR / 'tcempei.db'}"
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL es obligatorio y debe apuntar a PostgreSQL; no se admite SQLite."
+    )
 
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 ALGORITHM_VERSION = "1.0.0"
 
 def ensure_data_dirs() -> None:
