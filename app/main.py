@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from datetime import datetime
@@ -17,6 +18,12 @@ from app.config import ensure_data_dirs
 from app.db import Base, get_engine, get_session_local
 from app.models import Bridge, Cable, CableStateVersion, Sensor, SensorInstallation, StrandType, User
 from app.services import ValidationError, create_cable_state_version, register_installation
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s in %(module)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 ensure_data_dirs()
 SessionLocal = get_session_local()
@@ -364,6 +371,11 @@ def build_content(pathname: str):
             html.H3("Admin"),
             html.P("Gestión de usuarios y auditoría mínima."),
         ])
+    if pathname.startswith("/home"):
+        return html.Div([
+            html.H3("Bienvenida"),
+            html.P("Sistema de gestión histórica y análisis de tirantes para puentes atirantados."),
+        ])
     return html.Div([
         html.H3("Bienvenida"),
         html.P("Sistema de gestión histórica y análisis de tirantes para puentes atirantados."),
@@ -378,8 +390,8 @@ def render_login():
             dcc.Input(id="login-email", type="email", placeholder="admin@example.com"),
             html.Label("Contraseña"),
             dcc.Input(id="login-password", type="password", placeholder="******"),
-            html.Button("Entrar", id="login-button"),
-            html.Div(id="login-feedback", className="alert"),
+            html.Button("Entrar", id="login-button", n_clicks=0),
+            html.Div(id="login-alert", className="alert"),
         ],
         className="login-container",
     )
@@ -446,7 +458,7 @@ def show_user(user_data):
 
 
 @app.callback(
-    Output("login-feedback", "children"),
+    Output("login-alert", "children"),
     Output("current-user", "data"),
     Output("url", "pathname"),
     Input("login-button", "n_clicks"),
@@ -455,23 +467,39 @@ def show_user(user_data):
     prevent_initial_call=True,
 )
 def handle_login(n_clicks, email, password):
-    if not n_clicks:
-        return no_update, no_update, no_update
+    logger.info("Login click received: %s", n_clicks)
 
     email = (email or "").strip().lower()
     password = (password or "").strip()
 
+    logger.info("Email received: %s", email)
+
     if not email or not password:
-        return "Ingresa usuario y contraseña", no_update, no_update
+        return "Ingresa correo y contraseña", no_update, no_update
 
-    created, admin_message = ensure_default_admin()
-    feedback_prefix = f"{admin_message}. " if created else ""
+    try:
+        with SessionLocal() as session:
+            user = session.scalars(select(User).where(User.email == email)).first()
 
-    with SessionLocal() as session:
-        user = session.scalars(select(User).where(User.email == email)).first()
-        if not user or not verify_password(password, user.hashed_password):
-            return f"{feedback_prefix}Credenciales inválidas", no_update, no_update
-        return f"{feedback_prefix}Bienvenido", {"email": user.email, "role": user.role}, "/"
+            if not user:
+                logger.info("User not found: %s", email)
+                return "Usuario no existe", no_update, no_update
+
+            logger.info("User found: %s", email)
+
+            if not verify_password(password, user.hashed_password):
+                logger.info("Incorrect password for: %s", email)
+                return "Contraseña incorrecta", no_update, no_update
+
+            if not getattr(user, "is_active", True):
+                logger.info("Inactive user attempted login: %s", email)
+                return "Usuario inactivo", no_update, no_update
+
+            logger.info("Authentication successful for %s", email)
+            return "Inicio de sesión correcto", {"email": user.email, "role": user.role}, "/home"
+    except Exception:
+        logger.exception("Unexpected error during login")
+        return "Error interno. Revisa logs.", no_update, no_update
 
 
 @app.callback(

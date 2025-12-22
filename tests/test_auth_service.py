@@ -6,22 +6,11 @@ from app.auth_service import (
     hash_password,
     verify_password,
 )
-from app.db import Base, get_engine, get_session_local
 from app.models import User
 from app.validation_service import ValidationError
 
 
-def setup_session():
-    url = "sqlite+pysqlite:///:memory:"
-    engine = get_engine(url)
-    Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url, engine=engine)
-    return SessionLocal()
-
-
-def test_ensure_default_admin_creates_admin_if_missing():
-    session = setup_session()
-
+def test_ensure_default_admin_creates_admin_if_missing(session):
     created, message = ensure_default_admin(
         email="admin@test.com", password="secret", session=session
     )
@@ -33,8 +22,7 @@ def test_ensure_default_admin_creates_admin_if_missing():
     assert verify_password("secret", admin.hashed_password)
 
 
-def test_ensure_default_admin_is_idempotent_when_admin_exists():
-    session = setup_session()
+def test_ensure_default_admin_is_idempotent_when_admin_exists(session):
     session.add(User(email="first@admin.com", hashed_password="x", role="Admin"))
     session.commit()
 
@@ -52,9 +40,7 @@ def test_hash_and_verify_password_roundtrip():
     assert not verify_password("wrong", hashed)
 
 
-def test_create_user_rejects_duplicate_email():
-    session = setup_session()
-
+def test_create_user_rejects_duplicate_email(session):
     create_user(email="dup@test.com", hashed_password="abc", session=session)
 
     with pytest.raises(ValidationError):
