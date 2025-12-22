@@ -36,6 +36,7 @@ class User(Base, Timestamped):
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     hashed_password: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[str] = mapped_column(String, nullable=False, default="Consulta")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
 class Bridge(Base, Timestamped):

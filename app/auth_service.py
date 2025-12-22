@@ -36,14 +36,22 @@ def get_user_by_email(session: Session, email: str) -> Optional[User]:
     return session.scalars(select(User).where(User.email == email)).first()
 
 
-def create_user(email: str, hashed_password: str, role: str = "Consulta", session: Session | None = None) -> User:
+def create_user(
+    email: str,
+    hashed_password: str,
+    role: str = "Consulta",
+    is_active: bool = True,
+    session: Session | None = None,
+) -> User:
     """Crea un usuario validando unicidad del correo."""
 
     with session_scope(session) as db:
         existing = get_user_by_email(db, email)
         if existing:
             raise ValidationError("El correo ya está registrado.")
-        user = User(email=email, hashed_password=hashed_password, role=role)
+        user = User(
+            email=email, hashed_password=hashed_password, role=role, is_active=is_active
+        )
         db.add(user)
         db.flush()
         return user
@@ -85,6 +93,7 @@ def ensure_default_admin(
             email=admin_email,
             hashed_password=hash_password(admin_password),
             role="Admin",
+            is_active=True,
             session=db,
         )
         return True, f"Usuario administrador creado con correo {user.email}."

@@ -3,7 +3,6 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy.orm import Session
 
-from app.db import Base, get_engine, get_session_local
 from app.models import (
     Cable,
     CableStateVersion,
@@ -35,12 +34,7 @@ def seed_basic(session: Session):
     return user, bridge, cable, strand_type
 
 
-def test_select_cable_state_prefers_open_range(tmp_path):
-    url = "sqlite+pysqlite:///:memory:"
-    engine = get_engine(url)
-    Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url, engine=engine)
-    session = SessionLocal()
+def test_select_cable_state_prefers_open_range(session):
     user, bridge, cable, strand_type = seed_basic(session)
 
     older = CableStateVersion(
@@ -85,12 +79,7 @@ def test_select_cable_state_prefers_open_range(tmp_path):
     assert past.id == older.id
 
 
-def test_select_k_calibration_chooses_valid_range():
-    url = "sqlite+pysqlite:///:memory:"
-    engine = get_engine(url)
-    Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url, engine=engine)
-    session = SessionLocal()
+def test_select_k_calibration_chooses_valid_range(session):
     user, bridge, cable, strand_type = seed_basic(session)
 
     k1 = KCalibration(
@@ -120,12 +109,7 @@ def test_select_k_calibration_chooses_valid_range():
     assert select_k_calibration(session, cable.id, datetime(2019, 12, 1)) is None
 
 
-def test_validate_installation_overlap():
-    url = "sqlite+pysqlite:///:memory:"
-    engine = get_engine(url)
-    Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url, engine=engine)
-    session = SessionLocal()
+def test_validate_installation_overlap(session):
     user, bridge, cable, strand_type = seed_basic(session)
 
     inst = SensorInstallation(
@@ -144,12 +128,7 @@ def test_validate_installation_overlap():
     assert validate_installation_overlap(session, 1, datetime(2023, 1, 1), None)
 
 
-def test_register_installation_rejects_overlap():
-    url = "sqlite+pysqlite:///:memory:"
-    engine = get_engine(url)
-    Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url, engine=engine)
-    session = SessionLocal()
+def test_register_installation_rejects_overlap(session):
     user, bridge, cable, strand_type = seed_basic(session)
 
     session.add(
@@ -176,12 +155,7 @@ def test_register_installation_rejects_overlap():
         )
 
 
-def test_register_installation_rejects_overlap_with_open_range():
-    url = "sqlite+pysqlite:///:memory:"
-    engine = get_engine(url)
-    Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url, engine=engine)
-    session = SessionLocal()
+def test_register_installation_rejects_overlap_with_open_range(session):
     user, bridge, cable, strand_type = seed_basic(session)
 
     session.add(
@@ -208,12 +182,7 @@ def test_register_installation_rejects_overlap_with_open_range():
         )
 
 
-def test_create_cable_state_version_guards_open_ranges():
-    url = "sqlite+pysqlite:///:memory:"
-    engine = get_engine(url)
-    Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url, engine=engine)
-    session = SessionLocal()
+def test_create_cable_state_version_guards_open_ranges(session):
     user, bridge, cable, strand_type = seed_basic(session)
 
     existing = CableStateVersion(
@@ -261,12 +230,7 @@ def test_create_cable_state_version_guards_open_ranges():
         )
 
 
-def test_create_cable_state_version_validates_antivandalic():
-    url = "sqlite+pysqlite:///:memory:"
-    engine = get_engine(url)
-    Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url, engine=engine)
-    session = SessionLocal()
+def test_create_cable_state_version_validates_antivandalic(session):
     user, bridge, cable, strand_type = seed_basic(session)
 
     with pytest.raises(ValidationError):
@@ -293,12 +257,7 @@ def test_create_cable_state_version_validates_antivandalic():
         )
 
 
-def test_create_cable_state_version_blocks_overlaps():
-    url = "sqlite+pysqlite:///:memory:"
-    engine = get_engine(url)
-    Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url, engine=engine)
-    session = SessionLocal()
+def test_create_cable_state_version_blocks_overlaps(session):
     user, bridge, cable, strand_type = seed_basic(session)
 
     session.add(
@@ -345,12 +304,7 @@ def test_create_cable_state_version_blocks_overlaps():
         )
 
 
-def test_create_cable_state_version_validates_antivandalic_length_bounds():
-    url = "sqlite+pysqlite:///:memory:"
-    engine = get_engine(url)
-    Base.metadata.create_all(engine)
-    SessionLocal = get_session_local(url, engine=engine)
-    session = SessionLocal()
+def test_create_cable_state_version_validates_antivandalic_length_bounds(session):
     user, bridge, cable, strand_type = seed_basic(session)
 
     with pytest.raises(ValidationError):
