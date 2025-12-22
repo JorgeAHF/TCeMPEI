@@ -9,15 +9,15 @@ Sistema local para gestión histórica y análisis de tirantes de puentes atiran
 - `data/`: Almacenamiento local para archivos crudos, normalizados y adjuntos.
 
 ## Uso rápido
-1. Crear entorno `.env` opcional con `DATABASE_URL`, `POSTGRES_*` y `DATA_DIR`. Por defecto usa SQLite en `data/tcempei.db`; si prefieres PostgreSQL, define `DATABASE_URL` (por ejemplo `postgresql+psycopg2://postgres:postgres@db:5432/tcempei`).
+1. Define `DATABASE_URL` apuntando a PostgreSQL (por ejemplo `postgresql+psycopg2://postgres:postgres@db:5432/tcempei`). Docker Compose ya lo establece para desarrollo local, pero la variable es obligatoria: la app falla si no está definida.
 2. Construir y levantar con Docker Compose:
    ```bash
    docker-compose up --build
    ```
 3. La UI estará en http://localhost:8050.
-4. Después de aplicar migraciones o de crear la base, crea el usuario administrador por defecto:
+4. Después de aplicar migraciones o de crear la base, crea el usuario administrador por defecto usando la misma `DATABASE_URL`:
    ```bash
-   python -m app.cli ensure-default-admin
+   docker compose exec web python -m app.cli ensure-default-admin
    ```
    Usa `DEFAULT_ADMIN_EMAIL` y `DEFAULT_ADMIN_PASSWORD` para personalizar las credenciales iniciales.
 
@@ -37,12 +37,13 @@ Sistema local para gestión histórica y análisis de tirantes de puentes atiran
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+export DATABASE_URL=postgresql+psycopg2://usuario:password@localhost:5432/tcempei
 python -m app.main
 ```
 
 ## Pruebas
 ```bash
-pytest
+TEST_DATABASE_URL=postgresql+psycopg2://usuario:password@localhost:5432/tcempei_test pytest
 ```
 
 ## Funcionalidad
