@@ -32,15 +32,14 @@ def _create_enum_if_not_exists(bind, enum_type: sa.Enum) -> None:
     enum_name = enum_type.name
     quoted_values = ", ".join(f"'{value}'" for value in enum_type.enums)
     bind.exec_driver_sql(
-        """
+        f"""
         DO $$
         BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = %(enum_name)s) THEN
-                EXECUTE format('CREATE TYPE %I AS ENUM (%s)', %(enum_name)s, %(values)s);
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = '{enum_name}') THEN
+                EXECUTE 'CREATE TYPE "{enum_name}" AS ENUM ({quoted_values})';
             END IF;
         END$$;
-        """,
-        {"enum_name": enum_name, "values": quoted_values},
+        """
     )
 
 
