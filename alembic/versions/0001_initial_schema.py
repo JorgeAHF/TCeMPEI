@@ -28,11 +28,27 @@ file_kind = sa.Enum("raw_csv", "normalized_csv", name="file_kind", create_type=F
 quality_flag = sa.Enum("ok", "doubtful", "bad", name="quality_flag", create_type=False)
 
 
+def _create_enum_if_not_exists(bind, enum_type: sa.Enum) -> None:
+    enum_name = enum_type.name
+    quoted_values = ", ".join(f"'{value}'" for value in enum_type.enums)
+    bind.exec_driver_sql(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = %(enum_name)s) THEN
+                EXECUTE format('CREATE TYPE %I AS ENUM (%s)', %(enum_name)s, %(values)s);
+            END IF;
+        END$$;
+        """,
+        {"enum_name": enum_name, "values": quoted_values},
+    )
+
+
 def upgrade() -> None:
     bind = op.get_bind()
-    channel_status.create(bind, checkfirst=True)
-    file_kind.create(bind, checkfirst=True)
-    quality_flag.create(bind, checkfirst=True)
+    _create_enum_if_not_exists(bind, channel_status)
+    _create_enum_if_not_exists(bind, file_kind)
+    _create_enum_if_not_exists(bind, quality_flag)
 
     op.create_table(
         "users",
