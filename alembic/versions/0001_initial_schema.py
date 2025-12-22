@@ -31,17 +31,15 @@ quality_flag = sa.Enum("ok", "doubtful", "bad", name="quality_flag", create_type
 def _create_enum_if_not_exists(bind, enum_type: sa.Enum) -> None:
     enum_name = enum_type.name
     quoted_values = ", ".join(f"'{value}'" for value in enum_type.enums)
-    op.execute(
-        sa.text(
-            """
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = :enum_name) THEN
-                    EXECUTE format('CREATE TYPE %I AS ENUM (%s)', :enum_name, :values);
-                END IF;
-            END$$;
-            """
-        ),
+    bind.exec_driver_sql(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = %(enum_name)s) THEN
+                EXECUTE format('CREATE TYPE %I AS ENUM (%s)', %(enum_name)s, %(values)s);
+            END IF;
+        END$$;
+        """,
         {"enum_name": enum_name, "values": quoted_values},
     )
 
