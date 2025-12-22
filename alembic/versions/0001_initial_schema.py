@@ -17,9 +17,15 @@ branch_labels = None
 depends_on = None
 
 
-channel_status = sa.Enum("ok", "warning_no_installation", "warning_mismatch_installation", name="channel_status")
-file_kind = sa.Enum("raw_csv", "normalized_csv", name="file_kind")
-quality_flag = sa.Enum("ok", "doubtful", "bad", name="quality_flag")
+channel_status = sa.Enum(
+    "ok",
+    "warning_no_installation",
+    "warning_mismatch_installation",
+    name="channel_status",
+    create_type=False,
+)
+file_kind = sa.Enum("raw_csv", "normalized_csv", name="file_kind", create_type=False)
+quality_flag = sa.Enum("ok", "doubtful", "bad", name="quality_flag", create_type=False)
 
 
 def upgrade() -> None:
