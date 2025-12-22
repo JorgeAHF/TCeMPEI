@@ -390,7 +390,7 @@ def render_login():
             dcc.Input(id="login-email", type="email", placeholder="admin@example.com"),
             html.Label("Contraseña"),
             dcc.Input(id="login-password", type="password", placeholder="******"),
-            html.Button("Entrar", id="login-button"),
+            html.Button("Entrar", id="login-button", n_clicks=0),
             html.Div(id="login-alert", className="alert"),
         ],
         className="login-container",
@@ -467,9 +467,7 @@ def show_user(user_data):
     prevent_initial_call=True,
 )
 def handle_login(n_clicks, email, password):
-    logger.info("Login click received")
-    if not n_clicks:
-        return no_update, no_update, no_update
+    logger.info("Login click received: %s", n_clicks)
 
     email = (email or "").strip().lower()
     password = (password or "").strip()
