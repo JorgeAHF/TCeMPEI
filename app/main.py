@@ -455,14 +455,23 @@ def show_user(user_data):
     prevent_initial_call=True,
 )
 def handle_login(n_clicks, email, password):
+    if not n_clicks:
+        return no_update, no_update, no_update
+
+    email = (email or "").strip().lower()
+    password = (password or "").strip()
+
     if not email or not password:
         return "Ingresa usuario y contraseña", no_update, no_update
+
+    created, admin_message = ensure_default_admin()
+    feedback_prefix = f"{admin_message}. " if created else ""
 
     with SessionLocal() as session:
         user = session.scalars(select(User).where(User.email == email)).first()
         if not user or not verify_password(password, user.hashed_password):
-            return "Credenciales inválidas", no_update, no_update
-        return "Bienvenido", {"email": user.email, "role": user.role}, "/"
+            return f"{feedback_prefix}Credenciales inválidas", no_update, no_update
+        return f"{feedback_prefix}Bienvenido", {"email": user.email, "role": user.role}, "/"
 
 
 @app.callback(
