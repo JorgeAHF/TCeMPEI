@@ -370,19 +370,6 @@ def build_content(pathname: str):
     ])
 
 
-def render_layout():
-    return html.Div(
-        [
-            dcc.Location(id="url"),
-            dcc.Store(id="current-user", storage_type="session"),
-            html.Div(id="page", children=render_login()),
-        ]
-    )
-
-
-app.layout = render_layout()
-
-
 def render_login():
     return html.Div(
         [
@@ -396,6 +383,19 @@ def render_login():
         ],
         className="login-container",
     )
+
+
+def render_layout():
+    return html.Div(
+        [
+            dcc.Location(id="url"),
+            dcc.Store(id="current-user", storage_type="session"),
+            html.Div(id="page", children=render_login()),
+        ]
+    )
+
+
+app.layout = render_layout()
 
 
 def render_app_shell():
