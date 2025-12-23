@@ -39,19 +39,23 @@ def call_api(method: str, path: str, **kwargs):
         return {"error": str(exc)}
 
 
-sidebar = dbc.Nav(
-    [
-        dbc.NavLink("Home", href="/", active="exact"),
-        dbc.NavLink("Catálogo", href="/catalogo", active="exact"),
-        dbc.NavLink("Adquisiciones", href="/adquisiciones", active="exact"),
-        dbc.NavLink("Pesajes directos", href="/pesajes", active="exact"),
-        dbc.NavLink("Análisis", href="/analisis", active="exact"),
-        dbc.NavLink("Histórico", href="/historico", active="exact"),
-        dbc.NavLink("Semáforo", href="/semaforo", active="exact"),
-        dbc.NavLink("Admin", href="/admin", active="exact"),
-    ],
-    vertical=True,
-    pills=True,
+sidebar = html.Div(
+    dbc.Nav(
+        [
+            dbc.NavLink("Home", href="/", active="exact"),
+            dbc.NavLink("Catálogo", href="/catalogo", active="exact"),
+            dbc.NavLink("Adquisiciones", href="/adquisiciones", active="exact"),
+            dbc.NavLink("Pesajes directos", href="/pesajes", active="exact"),
+            dbc.NavLink("Análisis", href="/analisis", active="exact"),
+            dbc.NavLink("Histórico", href="/historico", active="exact"),
+            dbc.NavLink("Semáforo", href="/semaforo", active="exact"),
+            dbc.NavLink("Admin", href="/admin", active="exact"),
+        ],
+        vertical=True,
+        pills=True,
+    ),
+    id="sidebar",
+    style={"display": "none"},
 )
 
 
@@ -81,6 +85,16 @@ def home_page():
     )
 
 
+def welcome_page():
+    return dbc.Container(
+        [
+            html.H3("Bienvenido a TCeMPEI"),
+            html.P("Usa el menú lateral para navegar el catálogo, adquisiciones, pesajes, análisis e histórico."),
+        ],
+        fluid=True,
+    )
+
+
 def catalogo_page():
     return dbc.Container(
         [
@@ -92,124 +106,70 @@ def catalogo_page():
             dash_table.DataTable(
                 id="bridges-table",
                 columns=[
-                    {"name": "id", "id": "id"},
-                    {"name": "nombre", "id": "nombre", "editable": True},
-                    {"name": "clave", "id": "clave_interna", "editable": True},
-                    {"name": "num_tirantes", "id": "num_tirantes", "editable": True},
-                    {"name": "notas", "id": "notas", "editable": True},
+                    {"name": ["", "ID"], "id": "id"},
+                    {"name": ["", "Nombre"], "id": "nombre"},
+                    {"name": ["", "Clave"], "id": "clave_interna"},
+                    {"name": ["", "Num. tirantes"], "id": "num_tirantes"},
+                    {"name": ["", "Notas"], "id": "notas"},
+                    {"name": ["Acciones", "Ver"], "id": "ver"},
+                    {"name": ["Acciones", "Editar"], "id": "editar"},
+                    {"name": ["Acciones", "Eliminar"], "id": "eliminar"},
                 ],
-                editable=True,
                 row_selectable="single",
+                hidden_columns=["id"],
                 style_table={"maxHeight": "300px", "overflowY": "auto"},
+                style_cell={"textAlign": "center"},
+                style_data_conditional=[
+                    {
+                        "if": {"column_id": c},
+                        "backgroundColor": "#f8f9fa",
+                        "color": "#0d6efd",
+                        "cursor": "pointer",
+                        "fontWeight": "600",
+                    }
+                    for c in ["ver", "editar", "eliminar"]
+                ],
+                merge_duplicate_headers=True,
             ),
-            html.Button("Agregar fila de puente", id="bridge-add-row", n_clicks=0, className="btn btn-secondary btn-sm my-2"),
-            dbc.Button("Guardar cambios de puentes", id="bridges-save", color="primary", className="mb-3"),
+            dbc.Button("Seleccionar puente", id="bridge-select", color="info", className="mb-3 ms-2", outline=True, size="sm"),
+            dbc.Button("Nuevo puente", id="bridge-add-row", color="secondary", className="mb-3 ms-2", outline=True, size="sm"),
             html.Div(id="br-edit-status", className="mb-3"),
+            html.Div(id="br-select-status", className="mb-2"),
             html.Hr(),
             html.P("Una vez creado el puente, define tirantes y sus estados."),
-            html.H5("Paso 2: Tirantes del puente seleccionado"),
+            html.H5("Paso 2: Tirantes y estados (resumen)"),
             dash_table.DataTable(
-                id="cables-table",
+                id="cables-states-table",
                 columns=[
-                    {"name": "id", "id": "id"},
-                    {"name": "nombre_en_puente", "id": "nombre_en_puente"},
-                    {"name": "notas", "id": "notas"},
+                    {"name": ["", "ID"], "id": "id"},
+                    {"name": ["", "Tirante"], "id": "nombre_en_puente"},
+                    {"name": ["", "Fecha de actualización"], "id": "valid_from"},
+                    {"name": ["", "Caducidad"], "id": "valid_to"},
+                    {"name": ["Acciones", "Ver"], "id": "ver"},
+                    {"name": ["Acciones", "Editar"], "id": "editar"},
+                    {"name": ["Acciones", "Eliminar"], "id": "eliminar"},
                 ],
-                row_selectable="single",
-                style_table={"maxHeight": "240px", "overflowY": "auto"},
-            ),
-            html.Br(),
-            html.H6("Edición rápida de tirantes (nombre/notas)"),
-            dash_table.DataTable(
-                id="cables-edit-table",
-                columns=[
-                    {"name": "id", "id": "id"},
-                    {"name": "nombre_en_puente", "id": "nombre_en_puente", "editable": True},
-                    {"name": "notas", "id": "notas", "editable": True},
+                data=[],
+                hidden_columns=["id"],
+                style_table={"maxHeight": "300px", "overflowY": "auto"},
+                style_cell={"textAlign": "center"},
+                style_data_conditional=[
+                    {
+                        "if": {"column_id": c},
+                        "backgroundColor": "#f8f9fa",
+                        "color": "#0d6efd",
+                        "textAlign": "center",
+                        "cursor": "pointer",
+                        "fontWeight": "600",
+                    }
+                    for c in ["ver", "editar", "eliminar"]
                 ],
-                editable=True,
-                style_table={"maxHeight": "240px", "overflowY": "auto"},
+                merge_duplicate_headers=True,
             ),
-            dbc.Button("Guardar tirantes editados", id="cables-edit-save", color="secondary", className="mt-2"),
-            html.Div(id="cables-edit-status", className="mb-3"),
-            html.H5("Tipo de torón"),
-            dbc.Row(
-                [
-                    dbc.Col(dbc.Input(id="st-nombre", placeholder="Nombre"), md=2),
-                    dbc.Col(dbc.Input(id="st-diam", placeholder="diametro_mm", type="number"), md=2),
-                    dbc.Col(dbc.Input(id="st-area", placeholder="area_mm2", type="number"), md=2),
-                    dbc.Col(dbc.Input(id="st-e", placeholder="E_MPa", type="number"), md=2),
-                    dbc.Col(dbc.Input(id="st-fu", placeholder="Fu_default", type="number"), md=2),
-                    dbc.Col(dbc.Input(id="st-mu", placeholder="mu_por_toron_kg_m", type="number"), md=2),
-                ],
-                className="gy-2 mb-2",
-            ),
-            dbc.Textarea(id="st-notas", placeholder="Notas", className="mb-2"),
-            dbc.Button("Crear tipo torón", id="st-submit", color="primary", className="mb-3"),
-            html.Div(id="st-status", className="mb-3"),
-            html.H5("Tirante"),
-            dbc.Row(
-                [
-                    dbc.Col(dbc.Input(id="cb-bridge", placeholder="bridge_id", type="number"), md=4),
-                    dbc.Col(dbc.Input(id="cb-nombre", placeholder="nombre_en_puente"), md=4),
-                ],
-                className="gy-2 mb-2",
-            ),
-            dbc.Textarea(id="cb-notas", placeholder="Notas", className="mb-2"),
-            dbc.Button("Crear tirante", id="cb-submit", color="primary", className="mb-3"),
-            html.Div(id="cb-status", className="mb-3"),
-            html.H6("Renombrar tirante (placeholders T-XX)"),
-            dbc.Row(
-                [
-                    dbc.Col(dbc.Input(id="cb-id-edit", placeholder="cable_id", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="cb-nombre-edit", placeholder="Nuevo nombre en puente"), md=5),
-                    dbc.Col(dbc.Button("Guardar nombre", id="cb-edit-submit", color="secondary"), md=3),
-                ],
-                className="gy-2 mb-2",
-            ),
-            html.Div(id="cb-edit-status", className="mb-3"),
-            html.H5("Versión de estado de tirante"),
-            dbc.Row(
-                [
-                    dbc.Col(dbc.Input(id="stv-cable", placeholder="cable_id", type="number"), md=2),
-                    dbc.Col(dbc.Input(id="stv-from", placeholder="valid_from (YYYY-MM-DD HH:MM)", type="text"), md=3),
-                    dbc.Col(dbc.Input(id="stv-to", placeholder="valid_to (opcional)", type="text"), md=3),
-                    dbc.Col(dbc.Input(id="stv-strand-type", placeholder="strand_type_id", type="number"), md=2),
-                ],
-                className="gy-2 mb-2",
-            ),
-            dbc.Row(
-                [
-                    dbc.Col(dbc.Input(id="stv-length", placeholder="length_effective_m", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="stv-strands-total", placeholder="strands_total", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="stv-strands-active", placeholder="strands_active", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="stv-fu-ovr", placeholder="Fu_override (opcional)", type="number"), md=3),
-                ],
-                className="gy-2 mb-2",
-            ),
-            dbc.Row(
-                [
-                    dbc.Col(dbc.Input(id="stv-mu-total", placeholder="mu_total_kg_m", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="stv-mu-active", placeholder="mu_active_basis_kg_m", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="stv-E", placeholder="E_MPa", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="stv-area", placeholder="area_mm2", type="number"), md=3),
-                ],
-                className="gy-2 mb-2",
-            ),
-            dbc.Row(
-                [
-                    dbc.Col(dbc.Input(id="stv-diam", placeholder="diametro_mm", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="stv-design", placeholder="design_tension_tf", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="stv-anti", placeholder="antivandalic_length_m (opcional)", type="number"), md=3),
-                ],
-                className="gy-2 mb-2",
-            ),
-            dbc.Textarea(id="stv-notes", placeholder="Notas / source", className="mb-2"),
-            dbc.Button("Crear versión", id="stv-submit", color="primary", className="mb-3"),
-            html.Div(id="stv-status", className="mb-3"),
+            html.Div(id="cable-delete-status", className="mb-2"),
             html.Hr(),
-            dbc.Button("Refrescar tablas", id="refresh-catalogo", color="secondary", className="mb-2"),
             html.Div(id="catalogo-tables"),
+            html.Div(id="strand-action-status", className="mt-2"),
         ],
         fluid=True,
     )
@@ -439,24 +399,198 @@ def historico_page():
             dcc.Graph(id="hist-graph-f0"),
             html.Div(id="hist-table"),
         ],
-        fluid=True,
-    )
+    fluid=True,
+)
 
 
 content = html.Div(id="page-content", className="p-4")
+modal_cable = dbc.Modal(
+    [
+        dbc.ModalHeader("Propiedades del Tirante"),
+        dbc.ModalBody(
+            [
+                dbc.Row(
+                    [
+                        dbc.Col(dbc.Label("ID tirante"), md=3),
+                        dbc.Col(dbc.Label("Versión (auto)"), md=3),
+                    ]
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(dbc.Input(id="modal-cable-id", placeholder="ID", disabled=True), md=3),
+                        dbc.Col(dbc.Input(id="modal-version", placeholder="versión", disabled=True), md=3),
+                    ]
+                ),
+                dbc.Label("Nombre en puente", className="mt-2"),
+                dbc.Input(id="modal-cable-name", placeholder="Nombre en puente", className="mb-2"),
+                dbc.Row(
+                    [
+                        dbc.Col(dbc.Label("Vigente desde (YYYY-MM-DD HH:MM)"), md=6),
+                        dbc.Col(dbc.Label("Vigente hasta (opcional)"), md=6),
+                    ],
+                className="mt-2",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(dbc.Input(id="modal-valid-from", type="datetime-local", placeholder="YYYY-MM-DDTHH:MM"), md=6),
+                        dbc.Col(dbc.Input(id="modal-valid-to", type="datetime-local", placeholder="YYYY-MM-DDTHH:MM"), md=6),
+                    ],
+                    className="mt-2",
+                ),
+                dbc.Label("Longitud efectiva (m)", className="mt-2"),
+                dbc.Input(id="modal-length", placeholder="Longitud efectiva (m)", type="number", className="mb-2"),
+                dbc.Row(
+                    [
+                        dbc.Col(dbc.Label("Tipo de torón"), md=4),
+                        dbc.Col(
+                            dcc.Dropdown(
+                                id="modal-strand-type",
+                                placeholder="Selecciona tipo de torón",
+                                options=[],
+                                clearable=False,
+                            ),
+                            md=4,
+                        ),
+                        dbc.Col(dbc.Button("Editar torón", id="strand-edit", color="secondary", size="sm"), md=2),
+                        dbc.Col(dbc.Button("Nuevo torón", id="strand-new", color="secondary", outline=True, size="sm"), md=2),
+                    ],
+                    className="mt-2",
+                ),
+                dbc.Label("Torones totales", className="mt-2"),
+                dbc.Input(id="modal-strands-total", placeholder="Torones totales", type="number", className="mb-2"),
+                dbc.Label("Torones activos", className="mt-2"),
+                dbc.Input(id="modal-strands-active", placeholder="Torones activos", type="number", className="mb-2"),
+                dbc.Label("Masa total (kg/m)", className="mt-2"),
+                dbc.Input(id="modal-mu-total", placeholder="Masa total (kg/m)", type="number", className="mb-2"),
+                dbc.Label("Masa torones activos (kg/m)", className="mt-2"),
+                dbc.Input(id="modal-mu-active", placeholder="Masa activos (kg/m)", type="number", className="mb-2"),
+                dbc.Label("Módulo E (MPa)", className="mt-2"),
+                dbc.Input(id="modal-E", placeholder="E (MPa)", type="number", className="mb-2"),
+                dbc.Label("Área (mm²)", className="mt-2"),
+                dbc.Input(id="modal-area", placeholder="Área (mm²)", type="number", className="mb-2"),
+                dbc.Label("Diámetro (mm)", className="mt-2"),
+                dbc.Input(id="modal-diam", placeholder="Diámetro (mm)", type="number", className="mb-2"),
+                dbc.Label("Fu override (opcional)", className="mt-2"),
+                dbc.Input(id="modal-Fu", placeholder="Fu override", type="number", className="mb-2"),
+                dbc.Label("Tensión de diseño (tf)", className="mt-2"),
+                dbc.Input(id="modal-design", placeholder="Tensión de diseño (tf)", type="number", className="mb-2"),
+                dbc.Label("Longitud antivandálico (m, opcional)", className="mt-2"),
+                dbc.Input(id="modal-anti", placeholder="Longitud antivandálico (m)", type="number", className="mb-2"),
+                dbc.Label("Notas / fuente", className="mt-2"),
+                dbc.Textarea(id="modal-notes", placeholder="Notas / fuente", className="mb-2"),
+                html.Div(id="cable-modal-status", className="mt-2"),
+            ]
+        ),
+        dbc.ModalFooter(
+            [
+                dbc.Button("Guardar", id="cable-modal-save", color="primary", className="me-2"),
+                dbc.Button("Cerrar", id="cable-modal-close", color="secondary"),
+            ]
+        ),
+    ],
+    id="cable-modal",
+    is_open=False,
+    size="lg",
+    style={"maxWidth": "80vw"},
+)
 
+modal_bridge = dbc.Modal(
+    [
+        dbc.ModalHeader("Puente"),
+        dbc.ModalBody(
+            [
+                dbc.Input(id="bridge-id", type="number", placeholder="ID (auto)", disabled=True, className="mb-2"),
+                dbc.Label("Nombre"),
+                dbc.Input(id="bridge-nombre", placeholder="Nombre", className="mb-2"),
+                dbc.Label("Clave interna"),
+                dbc.Input(id="bridge-clave", placeholder="Clave interna", className="mb-2"),
+                dbc.Label("Número de tirantes"),
+                dbc.Input(id="bridge-num", type="number", placeholder="Num. tirantes", className="mb-2"),
+                dbc.Label("Notas"),
+                dbc.Textarea(id="bridge-notas", placeholder="Notas", className="mb-2"),
+                html.Div(id="bridge-modal-status", className="mt-2"),
+            ]
+        ),
+        dbc.ModalFooter(
+            [
+                dbc.Button("Guardar", id="bridge-modal-save", color="primary", className="me-2"),
+                dbc.Button("Cerrar", id="bridge-modal-close", color="secondary"),
+            ]
+        ),
+    ],
+    id="bridge-modal",
+    is_open=False,
+    size="lg",
+    style={"maxWidth": "80vw"},
+)
+
+modal_strand = dbc.Modal(
+    [
+        dbc.ModalHeader("Propiedades del Torón"),
+        dbc.ModalBody(
+            [
+                dbc.Row(
+                    [
+                        dbc.Col(dbc.Label("ID torón"), md=4),
+                        dbc.Col(dbc.Label("Vigente desde (opcional)"), md=4),
+                        dbc.Col(dbc.Label("Vigente hasta (opcional)"), md=4),
+                    ]
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(dbc.Input(id="strand-id", placeholder="ID", disabled=True), md=4),
+                        dbc.Col(dbc.Input(id="strand-valid-from", type="datetime-local", placeholder="YYYY-MM-DDTHH:MM"), md=4),
+                        dbc.Col(dbc.Input(id="strand-valid-to", type="datetime-local", placeholder="YYYY-MM-DDTHH:MM"), md=4),
+                    ]
+                ),
+                dbc.Label("Nombre", className="mt-2"),
+                dbc.Input(id="strand-nombre", placeholder="Nombre", className="mb-2"),
+                dbc.Label("Masa por torón (kg/m)", className="mt-2"),
+                dbc.Input(id="strand-mu", placeholder="kg/m", type="number", className="mb-2"),
+                dbc.Label("Módulo E (MPa)", className="mt-2"),
+                dbc.Input(id="strand-E", placeholder="E (MPa)", type="number", className="mb-2"),
+                dbc.Label("Área (mm²)", className="mt-2"),
+                dbc.Input(id="strand-area", placeholder="Área (mm²)", type="number", className="mb-2"),
+                dbc.Label("Diámetro (mm)", className="mt-2"),
+                dbc.Input(id="strand-diam", placeholder="Diámetro (mm)", type="number", className="mb-2"),
+                dbc.Label("Fu (default)", className="mt-2"),
+                dbc.Input(id="strand-Fu", placeholder="Fu default", type="number", className="mb-2"),
+                dbc.Label("Notas", className="mt-2"),
+                dbc.Textarea(id="strand-notas", placeholder="Notas", className="mb-2"),
+                html.Div(id="strand-status", className="mt-2"),
+            ]
+        ),
+        dbc.ModalFooter(
+            [
+                dbc.Button("Guardar torón", id="strand-save", color="primary", className="me-2"),
+                dbc.Button("Cerrar", id="strand-close", color="secondary"),
+            ]
+        ),
+    ],
+    id="strand-modal",
+    is_open=False,
+)
 app.layout = dbc.Container(
     [
         dcc.Location(id="url"),
         dcc.Store(id="token-store"),
         dcc.Store(id="user-info"),
         dcc.Store(id="selected-bridge-store"),
+        dcc.Store(id="selected-bridge-name"),
         dcc.Store(id="cables-store"),
-        dcc.Store(id="cables-edit-store"),
         dbc.Row(
             [
                 dbc.Col(sidebar, width=2, style={"borderRight": "1px solid #eaeaea", "minHeight": "100vh"}),
-                dbc.Col(content, width=10),
+                dbc.Col(
+                    [
+                        html.Div(id="header-info", className="p-2"),
+                        content,
+                        modal_cable,
+                        modal_strand,
+                        modal_bridge,
+                    ],
+                    width=10,
+                ),
             ],
             className="g-0",
         ),
@@ -465,10 +599,17 @@ app.layout = dbc.Container(
 )
 
 
-@app.callback(Output("page-content", "children"), Input("url", "pathname"))
-def render_page(pathname: str):
+@app.callback(
+    Output("page-content", "children"),
+    Output("sidebar", "style"),
+    Input("url", "pathname"),
+    Input("token-store", "data"),
+)
+def render_page(pathname: str, token):
+    if not token:
+        return home_page(), {"display": "none"}
     pages = {
-        "/": home_page(),
+        "/": welcome_page(),
         "/catalogo": catalogo_page(),
         "/adquisiciones": acquisition_page(),
         "/pesajes": pesaje_page(),
@@ -477,7 +618,7 @@ def render_page(pathname: str):
         "/semaforo": semaforo_page(),
         "/admin": html.Div([html.H3("Admin"), html.P("Gestión de usuarios via /users y /auth/login")]),
     }
-    return pages.get(pathname, home_page())
+    return pages.get(pathname, welcome_page()), {"borderRight": "1px solid #eaeaea", "minHeight": "100vh"}
 
 
 @app.callback(
@@ -504,6 +645,20 @@ def do_login(_, username, password):
         return None, None, str(resp)
     except Exception as e:
         return None, None, f"Error login: {e}"
+
+
+@app.callback(
+    Output("header-info", "children"),
+    Input("user-info", "data"),
+    Input("selected-bridge-name", "data"),
+)
+def update_header(user, bridge_name):
+    username = user.get("username") if isinstance(user, dict) else None
+    return dbc.Alert(
+        f"Usuario: {username or 'No autenticado'} | Puente: {bridge_name or 'No seleccionado'}",
+        color="light",
+        className="mb-3",
+    )
 
 
 @app.callback(
@@ -599,36 +754,6 @@ def submit_strand(_, nombre, diam, area, e, fu, mu, notas, token):
 
 
 @app.callback(
-    Output("cb-status", "children"),
-    Input("cb-submit", "n_clicks"),
-    State("cb-bridge", "value"),
-    State("cb-nombre", "value"),
-    State("cb-notas", "value"),
-    State("token-store", "data"),
-    prevent_initial_call=True,
-)
-def submit_cable(_, bridge_id, nombre, notas, token):
-    payload = {"bridge_id": bridge_id, "nombre_en_puente": nombre, "notas": notas}
-    res = call_api("POST", "/cables", json=payload, token=token)
-    return str(res)
-
-
-@app.callback(
-    Output("cb-edit-status", "children"),
-    Input("cb-edit-submit", "n_clicks"),
-    State("cb-id-edit", "value"),
-    State("cb-nombre-edit", "value"),
-    State("token-store", "data"),
-    prevent_initial_call=True,
-)
-def rename_cable(_, cable_id, new_name, token):
-    if not cable_id or not new_name:
-        return "Falta cable_id o nuevo nombre"
-    res = call_api("PUT", f"/cables/{cable_id}", json={"nombre_en_puente": new_name}, token=token)
-    return str(res)
-
-
-@app.callback(
     Output("bridges-table", "data", allow_duplicate=True),
     Output("cables-store", "data"),
     Output("catalogo-status", "children"),
@@ -648,9 +773,58 @@ def refresh_catalogo(_, token):
         status = f"Error tirantes: {cables}"
     else:
         status = "Catálogo cargado."
-    strands_table = dash_table.DataTable(data=strands, page_size=5) if isinstance(strands, list) else html.Div("")
+    strands_table = (
+        dash_table.DataTable(
+            id="strand-table",
+            columns=[
+                {"name": ["", "ID"], "id": "id"},
+                {"name": ["", "Nombre"], "id": "nombre"},
+                {"name": ["", "Área (mm²)"], "id": "area_mm2"},
+                {"name": ["Acciones", "Ver"], "id": "ver"},
+                {"name": ["Acciones", "Editar"], "id": "editar"},
+                {"name": ["Acciones", "Eliminar"], "id": "eliminar"},
+            ],
+            data=[
+                {
+                    "id": s.get("id"),
+                    "nombre": s.get("nombre"),
+                    "area_mm2": s.get("area_mm2"),
+                    "ver": "🔍 Ver",
+                    "editar": "✏️ Editar",
+                    "eliminar": "🗑 Eliminar",
+                }
+                for s in strands
+            ],
+            hidden_columns=["id"],
+            style_table={"maxHeight": "300px", "overflowY": "auto"},
+            style_cell={"textAlign": "center"},
+            style_data_conditional=[
+                {
+                    "if": {"column_id": c},
+                    "backgroundColor": "#f8f9fa",
+                    "color": "#0d6efd",
+                    "cursor": "pointer",
+                    "fontWeight": "600",
+                }
+                for c in ["ver", "editar", "eliminar"]
+            ],
+            merge_duplicate_headers=True,
+        )
+        if isinstance(strands, list)
+        else html.Div("")
+    )
     return (
-        bridges if isinstance(bridges, list) else [],
+        [
+            {
+                **b,
+                "ver": "🔍 Ver",
+                "editar": "✏️ Editar",
+                "eliminar": "🗑 Eliminar",
+            }
+            for b in bridges
+        ]
+        if isinstance(bridges, list)
+        else [],
         cables if isinstance(cables, list) else [],
         status,
         html.Div([html.H6("Tipos de torón"), strands_table]),
@@ -658,105 +832,597 @@ def refresh_catalogo(_, token):
 
 
 @app.callback(
-    Output("bridges-table", "data", allow_duplicate=True),
-    Output("br-edit-status", "children", allow_duplicate=True),
+    Output("bridge-modal", "is_open"),
+    Output("bridge-modal-status", "children"),
+    Output("bridge-id", "value"),
+    Output("bridge-nombre", "value"),
+    Output("bridge-clave", "value"),
+    Output("bridge-num", "value"),
+    Output("bridge-notas", "value"),
+    Output("bridge-nombre", "disabled"),
     Input("bridge-add-row", "n_clicks"),
+    Input("bridges-table", "active_cell"),
+    Input("bridge-modal-close", "n_clicks"),
     State("bridges-table", "data"),
     prevent_initial_call=True,
 )
-def add_bridge_row(_, current_rows):
-    rows = current_rows or []
-    rows.append({"id": None, "nombre": "", "clave_interna": "", "num_tirantes": None, "notas": ""})
-    return rows, "Fila nueva agregada (edita y presiona Guardar cambios de puentes)"
+def open_bridge_modal(n_new, active_cell, n_close, table_data):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        raise dash.exceptions.PreventUpdate
+    trigger = ctx.triggered[0]["prop_id"].split(".")[0]
+    empty = (False, "", None, None, None, None, None, False)
+    if trigger == "bridge-modal-close":
+        return empty
+    if trigger == "bridge-add-row":
+        return True, "", None, "", "", None, "", False
+    if trigger == "bridges-table":
+        if not active_cell or not table_data:
+            return False, "Selecciona un puente.", None, None, None, None, None, False
+        col = active_cell.get("column_id")
+        if col not in ("ver", "editar"):
+            raise dash.exceptions.PreventUpdate
+        row = table_data[active_cell.get("row")]
+        disable_fields = col == "ver"
+        return (
+            True,
+            "",
+            row.get("id"),
+            row.get("nombre"),
+            row.get("clave_interna"),
+            row.get("num_tirantes"),
+            row.get("notas"),
+            disable_fields,
+        )
+    raise dash.exceptions.PreventUpdate
 
 
 @app.callback(
     Output("selected-bridge-store", "data"),
-    Output("cables-table", "data"),
+    Output("selected-bridge-name", "data"),
+    Output("cables-states-table", "data", allow_duplicate=True),
     Input("bridges-table", "selected_rows"),
     State("bridges-table", "data"),
     State("cables-store", "data"),
-    prevent_initial_call=True,
-)
-def select_bridge(selected_rows, bridges_data, cables_data):
-    if not selected_rows or not bridges_data:
-        return None, []
-    row = bridges_data[selected_rows[0]]
-    bridge_id = row.get("id")
-    cables = [c for c in (cables_data or []) if c.get("bridge_id") == bridge_id]
-    return bridge_id, cables
-
-
-@app.callback(
-    Output("cables-edit-table", "data"),
-    Input("selected-bridge-store", "data"),
-    State("cables-store", "data"),
-)
-def load_cables_for_edit(bridge_id, cables_data):
-    if not bridge_id:
-        return []
-    return [c for c in (cables_data or []) if c.get("bridge_id") == bridge_id]
-
-
-@app.callback(
-    Output("cables-edit-status", "children"),
-    Input("cables-edit-save", "n_clicks"),
-    State("cables-edit-table", "data"),
     State("token-store", "data"),
     prevent_initial_call=True,
 )
-def save_cable_edits(_, rows, token):
-    if not rows:
-        return "No hay tirantes para guardar."
-    messages = []
-    for r in rows:
-        cid = r.get("id")
-        if not cid:
-            continue
-        payload = {
-            "nombre_en_puente": r.get("nombre_en_puente"),
-            "notas": r.get("notas"),
-        }
-        res = call_api("PUT", f"/cables/{cid}", json=payload, token=token)
-        if isinstance(res, dict) and res.get("error"):
-            messages.append(f"Error cable {cid}: {res}")
-    return "Cambios guardados" if not messages else "; ".join(messages)
+def select_bridge(selected_rows, bridges_data, cables_data, token):
+    if not selected_rows or not bridges_data:
+        return None, None, []
+    row = bridges_data[selected_rows[0]]
+    bridge_id = row.get("id")
+    bridge_name = row.get("nombre")
+    cables = [c for c in (cables_data or []) if c.get("bridge_id") == bridge_id]
+    summary = []
+    for c in cables:
+        valid_from = ""
+        valid_to = ""
+        states = call_api("GET", f"/cables/{c.get('id')}/states", token=token) if token else []
+        if isinstance(states, list) and states:
+            latest = states[0]
+            valid_from = latest.get("valid_from") or ""
+            valid_to = latest.get("valid_to") or ""
+        summary.append(
+            {
+                "id": c.get("id"),
+                "nombre_en_puente": c.get("nombre_en_puente"),
+                "valid_from": valid_from,
+                "valid_to": valid_to,
+                "ver": "🔍 Ver",
+                "editar": "✏️ Editar",
+                "eliminar": "🗑 Eliminar",
+            }
+        )
+    return bridge_id, bridge_name, summary
 
 
 @app.callback(
-    Output("bridges-table", "data"),
-    Output("br-edit-status", "children"),
-    Input("bridges-save", "n_clicks"),
+    Output("selected-bridge-store", "data", allow_duplicate=True),
+    Output("selected-bridge-name", "data", allow_duplicate=True),
+    Output("br-select-status", "children"),
+    Output("cables-states-table", "data", allow_duplicate=True),
+    Input("bridge-select", "n_clicks"),
+    State("bridges-table", "selected_rows"),
+    State("bridges-table", "data"),
+    State("cables-store", "data"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def manual_select_bridge(_, selected_rows, bridges_data, cables_data, token):
+    if not selected_rows or not bridges_data:
+        return dash.no_update, dash.no_update, "Selecciona un puente en la tabla.", dash.no_update
+    row = bridges_data[selected_rows[0]]
+    if not row.get("id"):
+        return dash.no_update, dash.no_update, "Selecciona un puente ya guardado (con ID).", dash.no_update
+    bridge_id = row.get("id")
+    bridge_name = row.get("nombre")
+    cables = [c for c in (cables_data or []) if c.get("bridge_id") == bridge_id]
+    summary = []
+    for c in cables:
+        valid_from = ""
+        valid_to = ""
+        states = call_api("GET", f"/cables/{c.get('id')}/states", token=token) if token else []
+        if isinstance(states, list) and states:
+            latest = states[0]
+            valid_from = latest.get("valid_from") or ""
+            valid_to = latest.get("valid_to") or ""
+        summary.append(
+            {
+                "id": c.get("id"),
+                "nombre_en_puente": c.get("nombre_en_puente"),
+                "valid_from": valid_from,
+                "valid_to": valid_to,
+                "ver": "🔍 Ver",
+                "editar": "✏️ Editar",
+                "eliminar": "🗑 Eliminar",
+            }
+        )
+    return bridge_id, bridge_name, f"Puente seleccionado: {bridge_name}", summary
+
+
+@app.callback(
+    Output("cable-delete-status", "children"),
+    Output("cables-states-table", "data", allow_duplicate=True),
+    Input("cables-states-table", "active_cell"),
+    State("cables-states-table", "data"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def delete_cable(active_cell, table_data, token):
+    if not active_cell or active_cell.get("column_id") != "eliminar":
+        raise dash.exceptions.PreventUpdate
+    if not token:
+        return "Login requerido.", table_data
+    row_idx = active_cell.get("row")
+    if row_idx is None or not table_data or row_idx >= len(table_data):
+        return "Fila no válida.", table_data
+    row = table_data[row_idx]
+    cid = row.get("id") or row.get("cable_id")
+    if not cid:
+        return "Id de tirante no válido.", table_data
+    res = call_api("DELETE", f"/cables/{cid}", token=token)
+    if isinstance(res, dict) and res.get("status") == "deleted":
+        remaining = [r for r in table_data if (r.get("id") or r.get("cable_id")) != cid]
+        return f"Tirante {cid} eliminado.", remaining
+    return f"Error eliminando tirante {cid}: {res}", table_data
+
+
+@app.callback(
+    Output("bridges-table", "data", allow_duplicate=True),
+    Output("br-edit-status", "children", allow_duplicate=True),
+    Output("selected-bridge-store", "data", allow_duplicate=True),
+    Output("selected-bridge-name", "data", allow_duplicate=True),
+    Input("bridge-modal-save", "n_clicks"),
+    State("bridge-id", "value"),
+    State("bridge-nombre", "value"),
+    State("bridge-clave", "value"),
+    State("bridge-num", "value"),
+    State("bridge-notas", "value"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def save_bridge_modal(_, bid, nombre, clave, num, notas, token):
+    if not token:
+        return dash.no_update, "Login requerido.", dash.no_update, dash.no_update
+    payload = {"nombre": nombre, "clave_interna": clave, "num_tirantes": num, "notas": notas}
+    if bid:
+        res = call_api("PUT", f"/bridges/{bid}", json=payload, token=token)
+    else:
+        res = call_api("POST", "/bridges", json=payload, token=token)
+    if isinstance(res, dict) and res.get("error"):
+        msg = res.get("error")
+        if "400" in str(msg):
+            msg = "No se puede reducir num_tirantes sin eliminar tirantes primero." if "reducir" in str(msg) else msg
+        return dash.no_update, f"Error: {msg}", dash.no_update, dash.no_update
+    # refrescar tabla
+    refreshed = call_api("GET", "/bridges", token=token)
+    table_data = [
+        {**b, "ver": "🔍 Ver", "editar": "✏️ Editar", "eliminar": "🗑 Eliminar"} for b in refreshed
+    ] if isinstance(refreshed, list) else []
+    return table_data, "Puente guardado.", res.get("id"), res.get("nombre")
+
+
+@app.callback(
+    Output("bridges-table", "data", allow_duplicate=True),
+    Output("br-edit-status", "children", allow_duplicate=True),
+    Output("selected-bridge-store", "data", allow_duplicate=True),
+    Output("selected-bridge-name", "data", allow_duplicate=True),
+    Input("bridges-table", "active_cell"),
     State("bridges-table", "data"),
     State("token-store", "data"),
     prevent_initial_call=True,
 )
-def save_bridges(_, rows, token):
-    if not rows:
-        return [], "No hay puentes para guardar."
-    updated = []
-    messages = []
-    for r in rows:
-        bid = r.get("id")
-        payload = {
-            "nombre": r.get("nombre"),
-            "clave_interna": r.get("clave_interna"),
-            "num_tirantes": r.get("num_tirantes"),
-            "notas": r.get("notas"),
-        }
-        if not bid:
-            res = call_api("POST", "/bridges", json=payload, token=token)
-        else:
-            res = call_api("PUT", f"/bridges/{bid}", json=payload, token=token)
-        if isinstance(res, dict) and res.get("id"):
-            updated.append(res)
-        else:
-            messages.append(f"Error puente {bid or 'nuevo'}: {res}")
-    # Refrescar desde API para evitar IDs locales/duplicados
-    refreshed = call_api("GET", "/bridges", token=token)
-    table_data = refreshed if isinstance(refreshed, list) else rows
-    return table_data, "Guardado" if not messages else "; ".join(messages)
+def delete_bridge_active(active_cell, rows, token):
+    if not active_cell or active_cell.get("column_id") != "eliminar":
+        raise dash.exceptions.PreventUpdate
+    if not token:
+        return dash.no_update, "Login requerido.", dash.no_update, dash.no_update
+    row_idx = active_cell.get("row")
+    if row_idx is None or not rows or row_idx >= len(rows):
+        return dash.no_update, "Fila no válida.", dash.no_update, dash.no_update
+    bid = rows[row_idx].get("id")
+    res = call_api("DELETE", f"/bridges/{bid}", token=token)
+    if isinstance(res, dict) and res.get("status") == "deleted":
+        new_rows = [r for i, r in enumerate(rows) if i != row_idx]
+        return new_rows, f"Puente {bid} eliminado.", None, None
+    msg = f"Error eliminando puente {bid}: {res}"
+    if isinstance(res, dict) and "400" in str(res.get("error", "")):
+        msg = "No se puede eliminar: primero elimina los tirantes del puente en el Paso 2."
+    return dash.no_update, msg, dash.no_update, dash.no_update
 
+@app.callback(
+    Output("cable-modal", "is_open"),
+    Output("cable-modal-status", "children"),
+    Output("modal-cable-id", "value"),
+    Output("modal-cable-name", "value"),
+    Output("modal-version", "value"),
+    Output("modal-valid-from", "value"),
+    Output("modal-valid-to", "value"),
+    Output("modal-length", "value"),
+    Output("modal-strand-type", "value"),
+    Output("modal-strand-type", "options"),
+    Output("modal-strands-total", "value"),
+    Output("modal-strands-active", "value"),
+    Output("modal-mu-total", "value"),
+    Output("modal-mu-active", "value"),
+    Output("modal-E", "value"),
+    Output("modal-area", "value"),
+    Output("modal-diam", "value"),
+    Output("modal-Fu", "value"),
+    Output("modal-design", "value"),
+    Output("modal-anti", "value"),
+    Output("modal-notes", "value"),
+    Output("modal-cable-name", "disabled"),
+    Output("modal-valid-from", "disabled"),
+    Output("modal-valid-to", "disabled"),
+    Output("modal-length", "disabled"),
+    Output("modal-strand-type", "disabled"),
+    Output("modal-strands-total", "disabled"),
+    Output("modal-strands-active", "disabled"),
+    Output("modal-mu-total", "disabled"),
+    Output("modal-mu-active", "disabled"),
+    Output("modal-E", "disabled"),
+    Output("modal-area", "disabled"),
+    Output("modal-diam", "disabled"),
+    Output("modal-Fu", "disabled"),
+    Output("modal-design", "disabled"),
+    Output("modal-anti", "disabled"),
+    Output("modal-notes", "disabled"),
+    Output("strand-id", "value"),
+    Input("cables-states-table", "active_cell"),
+    Input("cable-modal-close", "n_clicks"),
+    State("cables-states-table", "data"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def open_cable_modal(active_cell, n_close, table_data, token):
+    table_data = table_data or []
+    active_cell = active_cell or {}
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        raise dash.exceptions.PreventUpdate
+    trigger = ctx.triggered[0]["prop_id"].split(".")[0]
+    empty_return = (
+        False,  # modal open
+        "",  # status
+        None,  # cable id
+        None,  # cable name
+        None,  # version
+        "",  # valid_from
+        "",  # valid_to
+        None,  # length
+        None,  # strand_type value
+        [],  # strand options
+        None,  # strands_total
+        None,  # strands_active
+        None,  # mu_total
+        None,  # mu_active
+        None,  # E
+        None,  # area
+        None,  # diam
+        None,  # Fu
+        None,  # design
+        None,  # anti
+        "",  # notes
+        False,  # name disabled
+        False,  # valid_from disabled
+        False,  # valid_to disabled
+        False,  # length disabled
+        False,  # strand_type disabled
+        False,  # strands_total disabled
+        False,  # strands_active disabled
+        False,  # mu_total disabled
+        False,  # mu_active disabled
+        False,  # E disabled
+        False,  # area disabled
+        False,  # diam disabled
+        False,  # Fu disabled
+        False,  # design disabled
+        False,  # anti disabled
+        False,  # notes disabled
+        None,  # strand id
+    )
+    if trigger == "cable-modal-close":
+        return empty_return
+    if not active_cell or not table_data:
+        no_sel = list(empty_return)
+        no_sel[1] = "Selecciona un tirante primero."
+        return tuple(no_sel)
+    col = active_cell.get("column_id")
+    if col not in ("ver", "editar"):
+        raise dash.exceptions.PreventUpdate
+    row_idx = active_cell.get("row")
+    if row_idx is None or row_idx >= len(table_data):
+        raise dash.exceptions.PreventUpdate
+    row = table_data[row_idx]
+    cid = row.get("id") or row.get("cable_id")
+    latest = {}
+    states = call_api("GET", f"/cables/{cid}/states", token=token) if token else []
+    if isinstance(states, list) and states:
+        latest = states[0]
+    strand_options = []
+    strands = call_api("GET", "/strand-types", token=token) if token else []
+    if isinstance(strands, list):
+        strand_options = [{"label": f"{s.get('id')} - {s.get('nombre')}", "value": s.get("id")} for s in strands]
+    else:
+        strand_options = []
+    view_mode = col == "ver"
+    disabled = view_mode
+    def nz(val, default=""):
+        return val if val not in (None, "") else default
+    return (
+        True,
+        "",
+        cid,
+        row.get("nombre_en_puente"),
+        nz(latest.get("id") if latest else None, None),
+        nz(latest.get("valid_from") if latest else None, ""),
+        nz(latest.get("valid_to") if latest else None, ""),
+        nz(latest.get("length_effective_m") if latest else None, None),
+        nz(latest.get("strand_type_id") if latest else None, None),
+        strand_options or [],
+        nz(latest.get("strands_total") if latest else None, None),
+        nz(latest.get("strands_active") if latest else None, None),
+        nz(latest.get("mu_total_kg_m") if latest else None, None),
+        nz(latest.get("mu_active_basis_kg_m") if latest else None, None),
+        nz(latest.get("E_MPa") if latest else None, None),
+        nz(latest.get("area_mm2") if latest else None, None),
+        nz(latest.get("diametro_mm") if latest else None, None),
+        nz(latest.get("Fu_override") if latest else None, None),
+        nz(latest.get("design_tension_tf") if latest else None, None),
+        nz(latest.get("antivandalic_length_m") if latest else None, None),
+        nz(latest.get("notes") if latest else None, ""),
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        disabled,
+        latest.get("strand_type_id") if latest else None,
+    )
+
+
+@app.callback(
+    Output("cable-modal-status", "children", allow_duplicate=True),
+    Input("cable-modal-save", "n_clicks"),
+    State("modal-cable-id", "value"),
+    State("modal-cable-name", "value"),
+    State("modal-valid-from", "value"),
+    State("modal-valid-to", "value"),
+    State("modal-length", "value"),
+    State("modal-strand-type", "value"),
+    State("modal-strands-total", "value"),
+    State("modal-strands-active", "value"),
+    State("modal-mu-total", "value"),
+    State("modal-mu-active", "value"),
+    State("modal-E", "value"),
+    State("modal-area", "value"),
+    State("modal-diam", "value"),
+    State("modal-Fu", "value"),
+    State("modal-design", "value"),
+    State("modal-anti", "value"),
+    State("modal-notes", "value"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def save_cable_state(_, cid, cable_name, v_from, v_to, length, strand_type, stot, sact, mu_tot, mu_act, E, area, diam, Fu, design, anti, notes, token):
+    if not token:
+        return "Login requerido."
+    if not cid:
+        return "Falta cable_id."
+    # actualizar nombre del tirante si se envía
+    if cable_name:
+        call_api("PUT", f"/cables/{cid}", json={"nombre_en_puente": cable_name}, token=token)
+    required = {
+        "vigente desde": v_from,
+        "longitud efectiva (m)": length,
+        "tipo de torón": strand_type,
+        "torones totales": stot,
+        "torones activos": sact,
+        "masa total (kg/m)": mu_tot,
+        "masa activos (kg/m)": mu_act,
+        "E (MPa)": E,
+        "área (mm²)": area,
+        "diámetro (mm)": diam,
+        "tensión diseño (tf)": design,
+    }
+    faltan = [k for k, v in required.items() if v in (None, "", [])]
+    if faltan:
+        return f"Faltan campos requeridos: {', '.join(faltan)}"
+    payload = {
+        "cable_id": cid,
+        "valid_from": v_from,
+        "valid_to": v_to,
+        "length_effective_m": length,
+        "length_total_m": length,
+        "strand_type_id": strand_type,
+        "strands_total": stot,
+        "strands_active": sact,
+        "strands_inactive": max(0, (stot or 0) - (sact or 0)) if stot and sact else 0,
+        "mu_total_kg_m": mu_tot,
+        "mu_active_basis_kg_m": mu_act,
+        "E_MPa": E,
+        "area_mm2": area,
+        "diametro_mm": diam,
+        "design_tension_tf": design,
+        "Fu_override": Fu,
+        "antivandalic_enabled": bool(anti),
+        "antivandalic_length_m": anti,
+        "source": notes,
+        "notes": notes,
+    }
+    res = call_api("POST", "/cable-states", json=payload, token=token)
+    if isinstance(res, dict) and res.get("error"):
+        return f"Error: {res}"
+    return f"Guardado estado id {res.get('id') if isinstance(res, dict) else res}"
+
+
+@app.callback(
+    Output("strand-modal", "is_open"),
+    Output("strand-status", "children"),
+    Output("strand-id", "value", allow_duplicate=True),
+    Output("strand-valid-from", "value"),
+    Output("strand-valid-to", "value"),
+    Output("strand-nombre", "value"),
+    Output("strand-mu", "value"),
+    Output("strand-E", "value"),
+    Output("strand-area", "value"),
+    Output("strand-diam", "value"),
+    Output("strand-Fu", "value"),
+    Output("strand-notas", "value"),
+    Input("strand-edit", "n_clicks"),
+    Input("strand-new", "n_clicks"),
+    Input("strand-table", "active_cell"),
+    Input("strand-close", "n_clicks"),
+    State("modal-strand-type", "value"),
+    State("strand-table", "data"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def open_strand_modal(n_edit, n_new, active_cell, n_close, strand_type_id, strand_table, token):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        raise dash.exceptions.PreventUpdate
+    trigger = ctx.triggered[0]["prop_id"].split(".")[0]
+    empty = (False, "", None, None, None, None, None, None, None, None, None, None)
+    if trigger == "strand-close":
+        return empty
+    if trigger == "strand-new":
+        return (
+            True,
+            "",
+            None,
+            "",
+            "",
+            "",
+            None,
+            None,
+            None,
+            None,
+            None,
+            "",
+        )
+    # determinar id desde tabla o campo existente
+    if trigger == "strand-table":
+        if not active_cell or not strand_table:
+            return (False, "Selecciona un torón en la tabla.", None, None, None, None, None, None, None, None, None, None)
+        col = active_cell.get("column_id")
+        if col not in ("ver", "editar"):
+            raise dash.exceptions.PreventUpdate
+        row = strand_table[active_cell.get("row")]
+        strand_type_id = row.get("id")
+    if not strand_type_id:
+        return (False, "Selecciona un torón o crea uno nuevo.", None, None, None, None, None, None, None, None, None, None)
+    strands = call_api("GET", "/strand-types", token=token)
+    strand = None
+    if isinstance(strands, list):
+        strand = next((s for s in strands if s.get("id") == strand_type_id), None)
+    if not strand:
+        return (False, f"No se encontró torón {strand_type_id}", None, None, None, None, None, None, None, None, None, None)
+    return (
+        True,
+        "",
+        strand.get("id"),
+        "",
+        "",
+        strand.get("nombre"),
+        strand.get("mu_por_toron_kg_m"),
+        strand.get("E_MPa"),
+        strand.get("area_mm2"),
+        strand.get("diametro_mm"),
+        strand.get("Fu_default"),
+        strand.get("notas"),
+    )
+
+
+@app.callback(
+    Output("strand-status", "children", allow_duplicate=True),
+    Input("strand-save", "n_clicks"),
+    State("strand-id", "value"),
+    State("strand-nombre", "value"),
+    State("strand-mu", "value"),
+    State("strand-E", "value"),
+    State("strand-area", "value"),
+    State("strand-diam", "value"),
+    State("strand-Fu", "value"),
+    State("strand-notas", "value"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def save_strand_modal(_, strand_id, nombre, mu, e, area, diam, fu, notas, token):
+    payload = {
+        "nombre": nombre,
+        "mu_por_toron_kg_m": mu,
+        "E_MPa": e,
+        "area_mm2": area,
+        "diametro_mm": diam,
+        "Fu_default": fu,
+        "notas": notas,
+    }
+    if strand_id:
+        res = call_api("PUT", f"/strand-types/{strand_id}", json=payload, token=token)
+    else:
+        res = call_api("POST", "/strand-types", json=payload, token=token)
+    if isinstance(res, dict) and res.get("error"):
+        return f"Error: {res}"
+    sid = res.get("id") if isinstance(res, dict) else strand_id
+    return f"Torón {sid or 'nuevo'} guardado."
+
+
+@app.callback(
+    Output("strand-action-status", "children", allow_duplicate=True),
+    Output("strand-table", "data", allow_duplicate=True),
+    Input("strand-table", "active_cell"),
+    State("strand-table", "data"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def delete_strand(active_cell, table_data, token):
+    if not active_cell or active_cell.get("column_id") != "eliminar":
+        raise dash.exceptions.PreventUpdate
+    if not token:
+        return "Login requerido.", dash.no_update
+    row_idx = active_cell.get("row")
+    if row_idx is None or not table_data or row_idx >= len(table_data):
+        return "Fila no válida.", dash.no_update
+    row = table_data[row_idx]
+    sid = row.get("id")
+    res = call_api("DELETE", f"/strand-types/{sid}", token=token)
+    if isinstance(res, dict) and res.get("status") == "deleted":
+        remaining = [r for r in table_data if r.get("id") != sid]
+        return f"Torón {sid} eliminado.", remaining
+    return f"Error eliminando torón {sid}: {res}", dash.no_update
 @app.callback(
     Output("acq-status", "children"),
     Input("acq-submit", "n_clicks"),

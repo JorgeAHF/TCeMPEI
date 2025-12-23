@@ -66,6 +66,16 @@ class StrandTypeOut(StrandTypeCreate):
         orm_mode = True
 
 
+class StrandTypeUpdate(BaseModel):
+    nombre: Optional[str]
+    diametro_mm: Optional[float]
+    area_mm2: Optional[float]
+    E_MPa: Optional[float]
+    Fu_default: Optional[float]
+    mu_por_toron_kg_m: Optional[float]
+    notas: Optional[str]
+
+
 class CableCreate(BaseModel):
     bridge_id: int
     nombre_en_puente: str
