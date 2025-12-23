@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: cempei_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cempei
+      POSTGRES_PASSWORD: cempei
+      POSTGRES_DB: cempei
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: ./backend
+    container_name: cempei_backend
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql+psycopg2://cempei:cempei@db:5432/cempei
+      DATA_ROOT: /data
+      APP_ENV: development
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  dash:
+    build: ./backend
+    container_name: cempei_dash
+    depends_on:
+      - backend
+    environment:
+      BACKEND_URL: http://backend:8000
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    ports:
+      - "8050:8050"
+    command: python -m app.dash_app --host 0.0.0.0 --port 8050
+
+volumes:
+  postgres_data:
