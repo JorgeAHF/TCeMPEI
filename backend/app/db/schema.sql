@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS bridges (
     id BIGSERIAL PRIMARY KEY,
     nombre TEXT NOT NULL UNIQUE,
     clave_interna TEXT,
+    num_tirantes INTEGER,
     notas TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_by_user_id BIGINT REFERENCES users(id)

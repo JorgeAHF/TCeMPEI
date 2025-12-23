@@ -8,6 +8,7 @@ from dash import Input, Output, State, dash_table, dcc, html
 import base64
 import json
 import plotly.express as px
+import pandas as pd
 
 """
 UI simple para visualizar el avance:
@@ -25,9 +26,13 @@ app = dash.Dash(__name__, external_stylesheets=[dbc.themes.FLATLY], suppress_cal
 
 def call_api(method: str, path: str, **kwargs):
     url = f"{BACKEND_URL}{path}"
+    token = os.getenv("DASH_TOKEN") or kwargs.pop("token", None)
+    headers = kwargs.pop("headers", {}) or {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
         with httpx.Client(timeout=10.0) as client:
-            resp = client.request(method, url, **kwargs)
+            resp = client.request(method, url, headers=headers, **kwargs)
             resp.raise_for_status()
             return resp.json()
     except Exception as exc:
@@ -36,6 +41,7 @@ def call_api(method: str, path: str, **kwargs):
 
 sidebar = dbc.Nav(
     [
+        dbc.NavLink("Home", href="/", active="exact"),
         dbc.NavLink("Catálogo", href="/catalogo", active="exact"),
         dbc.NavLink("Adquisiciones", href="/adquisiciones", active="exact"),
         dbc.NavLink("Pesajes directos", href="/pesajes", active="exact"),
@@ -49,16 +55,83 @@ sidebar = dbc.Nav(
 )
 
 
+def home_page():
+    return dbc.Container(
+        [
+            html.H3("TCeMPEI"),
+            html.P("Plataforma interna para gestión histórica y análisis de tirantes."),
+            html.Ul(
+                [
+                    html.Li("Usa el menú para acceder a Catálogo, Adquisiciones, Pesajes, Análisis, Histórico y Semáforo."),
+                    html.Li("Requiere login (token JWT) para operaciones de alta (roles admin/analyst)."),
+                ]
+            ),
+            html.H5("Login"),
+            dbc.Row(
+                [
+                    dbc.Col(dbc.Input(id="login-user", placeholder="usuario", type="text"), md=4),
+                    dbc.Col(dbc.Input(id="login-pass", placeholder="contraseña", type="password"), md=4),
+                    dbc.Col(dbc.Button("Ingresar", id="login-submit", color="primary"), md=2),
+                ],
+                className="gy-2",
+            ),
+            html.Div(id="token-status", className="mt-2"),
+        ],
+        fluid=True,
+    )
+
+
 def catalogo_page():
     return dbc.Container(
         [
             html.H3("Catálogo"),
-            html.H5("Puente"),
-            dbc.Input(id="br-nombre", placeholder="Nombre", className="mb-2"),
-            dbc.Input(id="br-clave", placeholder="Clave interna", className="mb-2"),
-            dbc.Textarea(id="br-notas", placeholder="Notas", className="mb-2"),
-            dbc.Button("Crear puente", id="br-submit", color="primary", className="mb-3"),
-            html.Div(id="br-status", className="mb-3"),
+            html.P("Wizard rápido: selecciona/crea puente → renombra tirantes → define estado por tirante."),
+            dbc.Button("Cargar catálogo", id="refresh-catalogo", color="secondary", className="mb-2"),
+            html.Div(id="catalogo-status", className="mb-2"),
+            html.H5("Paso 1: Puentes (editable)"),
+            dash_table.DataTable(
+                id="bridges-table",
+                columns=[
+                    {"name": "id", "id": "id"},
+                    {"name": "nombre", "id": "nombre", "editable": True},
+                    {"name": "clave", "id": "clave_interna", "editable": True},
+                    {"name": "num_tirantes", "id": "num_tirantes", "editable": True},
+                    {"name": "notas", "id": "notas", "editable": True},
+                ],
+                editable=True,
+                row_selectable="single",
+                style_table={"maxHeight": "300px", "overflowY": "auto"},
+            ),
+            html.Button("Agregar fila de puente", id="bridge-add-row", n_clicks=0, className="btn btn-secondary btn-sm my-2"),
+            dbc.Button("Guardar cambios de puentes", id="bridges-save", color="primary", className="mb-3"),
+            html.Div(id="br-edit-status", className="mb-3"),
+            html.Hr(),
+            html.P("Una vez creado el puente, define tirantes y sus estados."),
+            html.H5("Paso 2: Tirantes del puente seleccionado"),
+            dash_table.DataTable(
+                id="cables-table",
+                columns=[
+                    {"name": "id", "id": "id"},
+                    {"name": "nombre_en_puente", "id": "nombre_en_puente"},
+                    {"name": "notas", "id": "notas"},
+                ],
+                row_selectable="single",
+                style_table={"maxHeight": "240px", "overflowY": "auto"},
+            ),
+            html.Br(),
+            html.H6("Edición rápida de tirantes (nombre/notas)"),
+            dash_table.DataTable(
+                id="cables-edit-table",
+                columns=[
+                    {"name": "id", "id": "id"},
+                    {"name": "nombre_en_puente", "id": "nombre_en_puente", "editable": True},
+                    {"name": "notas", "id": "notas", "editable": True},
+                ],
+                editable=True,
+                style_table={"maxHeight": "240px", "overflowY": "auto"},
+            ),
+            dbc.Button("Guardar tirantes editados", id="cables-edit-save", color="secondary", className="mt-2"),
+            html.Div(id="cables-edit-status", className="mb-3"),
             html.H5("Tipo de torón"),
             dbc.Row(
                 [
@@ -85,6 +158,16 @@ def catalogo_page():
             dbc.Textarea(id="cb-notas", placeholder="Notas", className="mb-2"),
             dbc.Button("Crear tirante", id="cb-submit", color="primary", className="mb-3"),
             html.Div(id="cb-status", className="mb-3"),
+            html.H6("Renombrar tirante (placeholders T-XX)"),
+            dbc.Row(
+                [
+                    dbc.Col(dbc.Input(id="cb-id-edit", placeholder="cable_id", type="number"), md=3),
+                    dbc.Col(dbc.Input(id="cb-nombre-edit", placeholder="Nuevo nombre en puente"), md=5),
+                    dbc.Col(dbc.Button("Guardar nombre", id="cb-edit-submit", color="secondary"), md=3),
+                ],
+                className="gy-2 mb-2",
+            ),
+            html.Div(id="cb-edit-status", className="mb-3"),
             html.H5("Versión de estado de tirante"),
             dbc.Row(
                 [
@@ -124,38 +207,6 @@ def catalogo_page():
             dbc.Textarea(id="stv-notes", placeholder="Notas / source", className="mb-2"),
             dbc.Button("Crear versión", id="stv-submit", color="primary", className="mb-3"),
             html.Div(id="stv-status", className="mb-3"),
-            html.H5("Sensor"),
-            dbc.Row(
-                [
-                    dbc.Col(dbc.Input(id="se-type", placeholder="sensor_type"), md=3),
-                    dbc.Col(dbc.Input(id="se-serial", placeholder="serial_or_asset_id"), md=3),
-                    dbc.Col(dbc.Input(id="se-unit", placeholder="unit"), md=3),
-                ],
-                className="gy-2 mb-2",
-            ),
-            dbc.Textarea(id="se-notes", placeholder="Notas", className="mb-2"),
-            dbc.Button("Crear sensor", id="se-submit", color="primary", className="mb-3"),
-            html.Div(id="se-status", className="mb-3"),
-            html.H5("Instalación de sensor"),
-            dbc.Row(
-                [
-                    dbc.Col(dbc.Input(id="si-sensor", placeholder="sensor_id", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="si-cable", placeholder="cable_id", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="si-from", placeholder="installed_from (YYYY-MM-DD HH:MM)", type="text"), md=3),
-                    dbc.Col(dbc.Input(id="si-to", placeholder="installed_to (opcional)", type="text"), md=3),
-                ],
-                className="gy-2 mb-2",
-            ),
-            dbc.Row(
-                [
-                    dbc.Col(dbc.Input(id="si-height", placeholder="height_m", type="number"), md=4),
-                    dbc.Col(dbc.Input(id="si-mount", placeholder="mounting_details", type="text"), md=4),
-                ],
-                className="gy-2 mb-2",
-            ),
-            dbc.Textarea(id="si-notes", placeholder="Notas", className="mb-2"),
-            dbc.Button("Crear instalación", id="si-submit", color="primary", className="mb-3"),
-            html.Div(id="si-status", className="mb-3"),
             html.Hr(),
             dbc.Button("Refrescar tablas", id="refresh-catalogo", color="secondary", className="mb-2"),
             html.Div(id="catalogo-tables"),
@@ -168,6 +219,7 @@ def acquisition_page():
     return dbc.Container(
         [
             html.H3("Adquisición"),
+            dcc.Store(id="raw-headers-store"),
             dbc.Row(
                 [
                     dbc.Col(dbc.Input(id="acq-bridge", placeholder="bridge_id", type="number"), md=3),
@@ -188,10 +240,17 @@ def acquisition_page():
             dbc.Button("Guardar raw", id="raw-submit", color="primary", className="mt-2"),
             html.Div(id="raw-status", className="mt-2"),
             html.H5("Paso 3-4: mapeo y normalizado"),
-            dbc.Textarea(
-                id="map-json",
-                placeholder='Ej: [{"csv_column_name":"ch1","sensor_id":1,"cable_id":2,"height_m":10.0}]',
-                style={"minHeight": "120px"},
+            html.P("Completa tirante, sensor y altura por columna. El sistema precarga encabezados del CSV."),
+            dash_table.DataTable(
+                id="map-table",
+                columns=[
+                    {"name": "csv_column_name", "id": "csv_column_name", "editable": False},
+                    {"name": "sensor_id", "id": "sensor_id", "editable": True},
+                    {"name": "cable_id", "id": "cable_id", "editable": True},
+                    {"name": "height_m", "id": "height_m", "editable": True},
+                ],
+                data=[],
+                editable=True,
             ),
             dbc.Input(id="norm-parser", placeholder="parser_version", value="v1", className="mt-2"),
             dbc.Input(id="norm-acq-id", placeholder="acquisition_id", type="number", className="mt-2"),
@@ -389,6 +448,11 @@ content = html.Div(id="page-content", className="p-4")
 app.layout = dbc.Container(
     [
         dcc.Location(id="url"),
+        dcc.Store(id="token-store"),
+        dcc.Store(id="user-info"),
+        dcc.Store(id="selected-bridge-store"),
+        dcc.Store(id="cables-store"),
+        dcc.Store(id="cables-edit-store"),
         dbc.Row(
             [
                 dbc.Col(sidebar, width=2, style={"borderRight": "1px solid #eaeaea", "minHeight": "100vh"}),
@@ -404,6 +468,7 @@ app.layout = dbc.Container(
 @app.callback(Output("page-content", "children"), Input("url", "pathname"))
 def render_page(pathname: str):
     pages = {
+        "/": home_page(),
         "/catalogo": catalogo_page(),
         "/adquisiciones": acquisition_page(),
         "/pesajes": pesaje_page(),
@@ -412,7 +477,33 @@ def render_page(pathname: str):
         "/semaforo": semaforo_page(),
         "/admin": html.Div([html.H3("Admin"), html.P("Gestión de usuarios via /users y /auth/login")]),
     }
-    return pages.get(pathname, catalogo_page())
+    return pages.get(pathname, home_page())
+
+
+@app.callback(
+    Output("token-store", "data"),
+    Output("user-info", "data"),
+    Output("token-status", "children"),
+    Input("login-submit", "n_clicks"),
+    State("login-user", "value"),
+    State("login-pass", "value"),
+    prevent_initial_call=True,
+)
+def do_login(_, username, password):
+    if not username or not password:
+        return None, None, "Usuario o contraseña vacíos"
+    try:
+        resp = call_api(
+            "POST",
+            "/auth/token",
+            data={"username": username, "password": password},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if isinstance(resp, dict) and resp.get("access_token"):
+            return resp["access_token"], resp.get("user"), f"Login ok como {resp.get('user', {}).get('username')}"
+        return None, None, str(resp)
+    except Exception as e:
+        return None, None, f"Error login: {e}"
 
 
 @app.callback(
@@ -434,9 +525,10 @@ def render_page(pathname: str):
     State("stv-design", "value"),
     State("stv-anti", "value"),
     State("stv-notes", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_state(_, cable_id, v_from, v_to, strand_type_id, length, stotal, sactive, fu_ovr, mu_total, mu_active, e, area, diam, design, anti, notes):
+def submit_state(_, cable_id, v_from, v_to, strand_type_id, length, stotal, sactive, fu_ovr, mu_total, mu_active, e, area, diam, design, anti, notes, token):
     payload = {
         "cable_id": cable_id,
         "valid_from": datetime.fromisoformat(v_from) if v_from else None,
@@ -459,48 +551,7 @@ def submit_state(_, cable_id, v_from, v_to, strand_type_id, length, stotal, sact
         "source": notes,
         "notes": notes,
     }
-    res = call_api("POST", "/cable-states", json=payload)
-    return str(res)
-
-
-@app.callback(
-    Output("se-status", "children"),
-    Input("se-submit", "n_clicks"),
-    State("se-type", "value"),
-    State("se-serial", "value"),
-    State("se-unit", "value"),
-    State("se-notes", "value"),
-    prevent_initial_call=True,
-)
-def submit_sensor(_, s_type, serial, unit, notes):
-    payload = {"sensor_type": s_type, "serial_or_asset_id": serial, "unit": unit, "notas": notes}
-    res = call_api("POST", "/sensors", json=payload)
-    return str(res)
-
-
-@app.callback(
-    Output("si-status", "children"),
-    Input("si-submit", "n_clicks"),
-    State("si-sensor", "value"),
-    State("si-cable", "value"),
-    State("si-from", "value"),
-    State("si-to", "value"),
-    State("si-height", "value"),
-    State("si-mount", "value"),
-    State("si-notes", "value"),
-    prevent_initial_call=True,
-)
-def submit_installation(_, sensor_id, cable_id, i_from, i_to, height, mount, notes):
-    payload = {
-        "sensor_id": sensor_id,
-        "cable_id": cable_id,
-        "installed_from": datetime.fromisoformat(i_from) if i_from else None,
-        "installed_to": datetime.fromisoformat(i_to) if i_to else None,
-        "height_m": height,
-        "mounting_details": mount,
-        "notes": notes,
-    }
-    res = call_api("POST", "/sensor-installations", json=payload)
+    res = call_api("POST", "/cable-states", json=payload, token=token)
     return str(res)
 
 
@@ -509,12 +560,14 @@ def submit_installation(_, sensor_id, cable_id, i_from, i_to, height, mount, not
     Input("br-submit", "n_clicks"),
     State("br-nombre", "value"),
     State("br-clave", "value"),
+    State("br-num", "value"),
     State("br-notas", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_bridge(_, nombre, clave, notas):
-    payload = {"nombre": nombre, "clave_interna": clave, "notas": notas}
-    res = call_api("POST", "/bridges", json=payload)
+def submit_bridge(_, nombre, clave, num, notas, token):
+    payload = {"nombre": nombre, "clave_interna": clave, "num_tirantes": num, "notas": notas}
+    res = call_api("POST", "/bridges", json=payload, token=token)
     return str(res)
 
 
@@ -528,9 +581,10 @@ def submit_bridge(_, nombre, clave, notas):
     State("st-fu", "value"),
     State("st-mu", "value"),
     State("st-notas", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_strand(_, nombre, diam, area, e, fu, mu, notas):
+def submit_strand(_, nombre, diam, area, e, fu, mu, notas, token):
     payload = {
         "nombre": nombre,
         "diametro_mm": diam,
@@ -540,7 +594,7 @@ def submit_strand(_, nombre, diam, area, e, fu, mu, notas):
         "mu_por_toron_kg_m": mu,
         "notas": notas,
     }
-    res = call_api("POST", "/strand-types", json=payload)
+    res = call_api("POST", "/strand-types", json=payload, token=token)
     return str(res)
 
 
@@ -550,53 +604,158 @@ def submit_strand(_, nombre, diam, area, e, fu, mu, notas):
     State("cb-bridge", "value"),
     State("cb-nombre", "value"),
     State("cb-notas", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_cable(_, bridge_id, nombre, notas):
+def submit_cable(_, bridge_id, nombre, notas, token):
     payload = {"bridge_id": bridge_id, "nombre_en_puente": nombre, "notas": notas}
-    res = call_api("POST", "/cables", json=payload)
+    res = call_api("POST", "/cables", json=payload, token=token)
     return str(res)
 
 
 @app.callback(
-    Output("catalogo-tables", "children"),
-    Input("refresh-catalogo", "n_clicks"),
+    Output("cb-edit-status", "children"),
+    Input("cb-edit-submit", "n_clicks"),
+    State("cb-id-edit", "value"),
+    State("cb-nombre-edit", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def refresh_catalogo(_):
-    bridges = call_api("GET", "/bridges")
-    strands = call_api("GET", "/strand-types")
-    cables = call_api("GET", "/cables")
-    states = call_api("GET", f"/cables/{cables[0]['id']}/states") if isinstance(cables, list) and cables else []
-    sensors = call_api("GET", "/sensors")
-    installs = call_api("GET", "/sensor-installations")
-    tables = []
-    if isinstance(bridges, list):
-        tables.append(html.Div([html.H6("Puentes"), dash_table.DataTable(data=bridges, page_size=5)]))
-    else:
-        tables.append(html.Div(f"Error puentes: {bridges}"))
-    if isinstance(strands, list):
-        tables.append(html.Div([html.H6("Tipos de torón"), dash_table.DataTable(data=strands, page_size=5)]))
-    else:
-        tables.append(html.Div(f"Error torones: {strands}"))
-    if isinstance(cables, list):
-        tables.append(html.Div([html.H6("Tirantes"), dash_table.DataTable(data=cables, page_size=5)]))
-    else:
-        tables.append(html.Div(f"Error tirantes: {cables}"))
-    if isinstance(states, list):
-        tables.append(html.Div([html.H6("Estados de tirante (del primer tirante listado)"), dash_table.DataTable(data=states, page_size=5)]))
-    else:
-        tables.append(html.Div(f"Error estados: {states}"))
-    if isinstance(sensors, list):
-        tables.append(html.Div([html.H6("Sensores"), dash_table.DataTable(data=sensors, page_size=5)]))
-    else:
-        tables.append(html.Div(f"Error sensores: {sensors}"))
-    if isinstance(installs, list):
-        tables.append(html.Div([html.H6("Instalaciones de sensores"), dash_table.DataTable(data=installs, page_size=5)]))
-    else:
-        tables.append(html.Div(f"Error instalaciones: {installs}"))
-    return tables
+def rename_cable(_, cable_id, new_name, token):
+    if not cable_id or not new_name:
+        return "Falta cable_id o nuevo nombre"
+    res = call_api("PUT", f"/cables/{cable_id}", json={"nombre_en_puente": new_name}, token=token)
+    return str(res)
 
+
+@app.callback(
+    Output("bridges-table", "data", allow_duplicate=True),
+    Output("cables-store", "data"),
+    Output("catalogo-status", "children"),
+    Output("catalogo-tables", "children"),
+    Input("refresh-catalogo", "n_clicks"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def refresh_catalogo(_, token):
+    bridges = call_api("GET", "/bridges", token=token)
+    cables = call_api("GET", "/cables", token=token)
+    strands = call_api("GET", "/strand-types", token=token)
+    status = ""
+    if isinstance(bridges, dict) and bridges.get("error"):
+        status = f"Error puentes: {bridges}"
+    elif isinstance(cables, dict) and cables.get("error"):
+        status = f"Error tirantes: {cables}"
+    else:
+        status = "Catálogo cargado."
+    strands_table = dash_table.DataTable(data=strands, page_size=5) if isinstance(strands, list) else html.Div("")
+    return (
+        bridges if isinstance(bridges, list) else [],
+        cables if isinstance(cables, list) else [],
+        status,
+        html.Div([html.H6("Tipos de torón"), strands_table]),
+    )
+
+
+@app.callback(
+    Output("bridges-table", "data", allow_duplicate=True),
+    Output("br-edit-status", "children", allow_duplicate=True),
+    Input("bridge-add-row", "n_clicks"),
+    State("bridges-table", "data"),
+    prevent_initial_call=True,
+)
+def add_bridge_row(_, current_rows):
+    rows = current_rows or []
+    rows.append({"id": None, "nombre": "", "clave_interna": "", "num_tirantes": None, "notas": ""})
+    return rows, "Fila nueva agregada (edita y presiona Guardar cambios de puentes)"
+
+
+@app.callback(
+    Output("selected-bridge-store", "data"),
+    Output("cables-table", "data"),
+    Input("bridges-table", "selected_rows"),
+    State("bridges-table", "data"),
+    State("cables-store", "data"),
+    prevent_initial_call=True,
+)
+def select_bridge(selected_rows, bridges_data, cables_data):
+    if not selected_rows or not bridges_data:
+        return None, []
+    row = bridges_data[selected_rows[0]]
+    bridge_id = row.get("id")
+    cables = [c for c in (cables_data or []) if c.get("bridge_id") == bridge_id]
+    return bridge_id, cables
+
+
+@app.callback(
+    Output("cables-edit-table", "data"),
+    Input("selected-bridge-store", "data"),
+    State("cables-store", "data"),
+)
+def load_cables_for_edit(bridge_id, cables_data):
+    if not bridge_id:
+        return []
+    return [c for c in (cables_data or []) if c.get("bridge_id") == bridge_id]
+
+
+@app.callback(
+    Output("cables-edit-status", "children"),
+    Input("cables-edit-save", "n_clicks"),
+    State("cables-edit-table", "data"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def save_cable_edits(_, rows, token):
+    if not rows:
+        return "No hay tirantes para guardar."
+    messages = []
+    for r in rows:
+        cid = r.get("id")
+        if not cid:
+            continue
+        payload = {
+            "nombre_en_puente": r.get("nombre_en_puente"),
+            "notas": r.get("notas"),
+        }
+        res = call_api("PUT", f"/cables/{cid}", json=payload, token=token)
+        if isinstance(res, dict) and res.get("error"):
+            messages.append(f"Error cable {cid}: {res}")
+    return "Cambios guardados" if not messages else "; ".join(messages)
+
+
+@app.callback(
+    Output("bridges-table", "data"),
+    Output("br-edit-status", "children"),
+    Input("bridges-save", "n_clicks"),
+    State("bridges-table", "data"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def save_bridges(_, rows, token):
+    if not rows:
+        return [], "No hay puentes para guardar."
+    updated = []
+    messages = []
+    for r in rows:
+        bid = r.get("id")
+        payload = {
+            "nombre": r.get("nombre"),
+            "clave_interna": r.get("clave_interna"),
+            "num_tirantes": r.get("num_tirantes"),
+            "notas": r.get("notas"),
+        }
+        if not bid:
+            res = call_api("POST", "/bridges", json=payload, token=token)
+        else:
+            res = call_api("PUT", f"/bridges/{bid}", json=payload, token=token)
+        if isinstance(res, dict) and res.get("id"):
+            updated.append(res)
+        else:
+            messages.append(f"Error puente {bid or 'nuevo'}: {res}")
+    # Refrescar desde API para evitar IDs locales/duplicados
+    refreshed = call_api("GET", "/bridges", token=token)
+    table_data = refreshed if isinstance(refreshed, list) else rows
+    return table_data, "Guardado" if not messages else "; ".join(messages)
 
 @app.callback(
     Output("acq-status", "children"),
@@ -616,12 +775,14 @@ def submit_acquisition(_, bridge_id, date_str, operator_id, fs, notes):
         "Fs_Hz": fs,
         "notes": notes,
     }
-    res = call_api("POST", "/acquisitions", json=payload)
+    token = dash.callback_context.states.get("token-store.data") if dash.callback_context else None
+    res = call_api("POST", "/acquisitions", json=payload, token=token)
     return str(res)
 
 
 @app.callback(
     Output("raw-status", "children"),
+    Output("raw-headers-store", "data"),
     Input("raw-submit", "n_clicks"),
     State("raw-upload", "contents"),
     State("raw-upload", "filename"),
@@ -631,32 +792,50 @@ def submit_acquisition(_, bridge_id, date_str, operator_id, fs, notes):
 )
 def submit_raw(_, contents, filename, parser_version, acq_id):
     if not contents:
-        return "Sube un archivo"
+        return "Sube un archivo", None
     header, b64data = contents.split(",", 1)
     data = base64.b64decode(b64data)
     files = {"file": (filename, data, "text/csv")}
-    res = call_api("POST", f"/acquisitions/{acq_id}/raw-upload", files=files, params={"parser_version": parser_version})
-    return str(res)
+    token = dash.callback_context.states.get("token-store.data") if dash.callback_context else None
+    res = call_api("POST", f"/acquisitions/{acq_id}/raw-upload", files=files, params={"parser_version": parser_version}, token=token)
+    headers = []
+    try:
+        txt = data.decode("utf-8").splitlines()
+        idx = next(i for i, line in enumerate(txt) if "DATA_START" in line) + 1
+        headers = [h.strip() for h in txt[idx].split(",") if h.strip()]
+    except Exception as e:
+        pass
+    return str(res), headers
+
+
+@app.callback(
+    Output("map-table", "data"),
+    Input("raw-headers-store", "data"),
+    prevent_initial_call=True,
+)
+def populate_map_table(headers):
+    if not headers:
+        return []
+    return [{"csv_column_name": h, "sensor_id": None, "cable_id": None, "height_m": None} for h in headers if h]
 
 
 @app.callback(
     Output("norm-status", "children"),
     Input("norm-submit", "n_clicks"),
-    State("map-json", "value"),
+    State("map-table", "data"),
     State("norm-parser", "value"),
     State("norm-acq-id", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_norm(_, map_json, parser_version, acq_id):
-    try:
-        mapping = json.loads(map_json) if map_json else []
-    except Exception as e:
-        return f"Error en JSON: {e}"
+def submit_norm(_, map_rows, parser_version, acq_id, token):
+    mapping = map_rows or []
     res = call_api(
         "POST",
         f"/acquisitions/{acq_id}/normalize",
         params={"parser_version": parser_version},
         json=mapping,
+        token=token,
     )
     return str(res)
 

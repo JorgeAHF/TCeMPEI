@@ -34,6 +34,7 @@ class Bridge(Base):
     id = Column(Integer, primary_key=True)
     nombre = Column(String, unique=True, nullable=False)
     clave_interna = Column(String)
+    num_tirantes = Column(Integer)
     notas = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     created_by_user_id = Column(Integer, ForeignKey("users.id"))

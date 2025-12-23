@@ -119,11 +119,28 @@ def create_user(payload: schemas.UserCreate, db: Session = Depends(get_db), curr
 
 @router.post("/bridges", response_model=schemas.BridgeOut)
 def create_bridge(payload: schemas.BridgeCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
-    bridge = Bridge(**payload.dict(), created_by_user_id=user.id)
+    bridge = Bridge(
+        nombre=payload.nombre,
+        clave_interna=payload.clave_interna,
+        num_tirantes=payload.num_tirantes,
+        notas=payload.notas,
+        created_by_user_id=user.id,
+    )
     db.add(bridge)
     db.commit()
     db.refresh(bridge)
     log_action(db, "bridge", bridge.id, "create", user.id)
+
+    # Crear tirantes placeholder si se solicitó
+    if payload.num_tirantes and payload.num_tirantes > 0:
+        width = max(2, len(str(payload.num_tirantes)))
+        for idx in range(1, payload.num_tirantes + 1):
+            name = f"T-{idx:0{width}d}"
+            cable = Cable(bridge_id=bridge.id, nombre_en_puente=name, created_by_user_id=user.id)
+            db.add(cable)
+            db.flush()
+            log_action(db, "cable", cable.id, "create_placeholder", user.id, notes="auto-generated")
+        db.commit()
     return bridge
 
 
@@ -131,6 +148,30 @@ def create_bridge(payload: schemas.BridgeCreate, db: Session = Depends(get_db), 
 def list_bridges(db: Session = Depends(get_db)):
     return db.query(Bridge).order_by(Bridge.nombre).all()
 
+
+@router.put("/bridges/{bridge_id}", response_model=schemas.BridgeOut)
+def update_bridge(
+    bridge_id: int,
+    payload: schemas.BridgeUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst")),
+):
+    bridge = db.get(Bridge, bridge_id)
+    if not bridge:
+        raise HTTPException(status_code=404, detail="Bridge not found")
+    if payload.nombre is not None:
+        bridge.nombre = payload.nombre
+    if payload.clave_interna is not None:
+        bridge.clave_interna = payload.clave_interna
+    if payload.num_tirantes is not None:
+        bridge.num_tirantes = payload.num_tirantes
+    if payload.notas is not None:
+        bridge.notas = payload.notas
+    db.add(bridge)
+    db.commit()
+    db.refresh(bridge)
+    log_action(db, "bridge", bridge.id, "update", user.id)
+    return bridge
 
 @router.post("/strand-types", response_model=schemas.StrandTypeOut)
 def create_strand_type(payload: schemas.StrandTypeCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
@@ -160,6 +201,27 @@ def create_cable(payload: schemas.CableCreate, db: Session = Depends(get_db), us
 @router.get("/cables", response_model=List[schemas.CableOut])
 def list_cables(db: Session = Depends(get_db)):
     return db.query(Cable).order_by(Cable.bridge_id, Cable.nombre_en_puente).all()
+
+
+@router.put("/cables/{cable_id}", response_model=schemas.CableOut)
+def update_cable(
+    cable_id: int,
+    payload: schemas.CableUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst")),
+):
+    cable = db.get(Cable, cable_id)
+    if not cable:
+        raise HTTPException(status_code=404, detail="Cable not found")
+    if payload.nombre_en_puente:
+        cable.nombre_en_puente = payload.nombre_en_puente
+    if payload.notas is not None:
+        cable.notas = payload.notas
+    db.add(cable)
+    db.commit()
+    db.refresh(cable)
+    log_action(db, "cable", cable.id, "update", user.id)
+    return cable
 
 
 @router.post("/cable-states", response_model=schemas.CableStateVersionOut)

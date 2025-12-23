@@ -27,13 +27,22 @@ class UserOut(BaseModel):
 class BridgeCreate(BaseModel):
     nombre: str
     clave_interna: Optional[str] = None
+    num_tirantes: Optional[int] = None
     notas: Optional[str] = None
+
+
+class BridgeUpdate(BaseModel):
+    nombre: Optional[str]
+    clave_interna: Optional[str]
+    num_tirantes: Optional[int]
+    notas: Optional[str]
 
 
 class BridgeOut(BaseModel):
     id: int
     nombre: str
     clave_interna: Optional[str]
+    num_tirantes: Optional[int]
     notas: Optional[str]
 
     class Config:
@@ -68,6 +77,11 @@ class CableOut(CableCreate):
 
     class Config:
         orm_mode = True
+
+
+class CableUpdate(BaseModel):
+    nombre_en_puente: Optional[str] = None
+    notas: Optional[str] = None
 
 
 class AcquisitionCreate(BaseModel):

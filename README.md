@@ -50,6 +50,15 @@ docker-compose run --rm backend pytest
 - Obtener token: `POST /auth/token` con form `username`/`password` (por defecto HS256 con SECRET_KEY).
 - Requiere bearer token en endpoints protegidos (catalogo, adquisiciones, etc.). Roles permitidos: admin, analyst para alta/modificación.
 
+### Uso “for dummies” del token en la UI Dash
+1. Consigue un token JWT: `curl -X POST -F "username=TU_USER" -F "password=TU_PASS" http://localhost:8000/auth/token` (el JSON trae `access_token`).
+2. Opción A (simple): abre la UI (http://localhost:8050), ve a la pestaña “Home” y pega el `access_token` en el campo de token. Verás “Token cargado” y podrás crear/editar desde la UI.
+3. Opción B: exporta la variable antes de arrancar Dash: `export DASH_TOKEN="eyJhbGciOi..."` y luego `docker-compose up` (o levanta el servicio dash). Así el token se envía automáticamente.
+4. Si usas docker-compose ya corriendo y quieres lanzar Dash manualmente dentro del contenedor, asegúrate de setear `DASH_TOKEN` antes de ejecutar `python -m app.dash_app`.
+
+## Notas de catálogo
+- Al crear un puente se puede indicar `num_tirantes`; el sistema genera tirantes placeholder `T-01..T-n` listos para editar su estado y propiedades.
+
 ## Siguientes pasos sugeridos
 - Implementar endpoints CRUD/seguridad (hashing, roles) y wiring real a PostgreSQL con SQLAlchemy.
 - Completar flujos UI Dash descritos en la especificación (wizards de adquisición, pesaje y análisis).
