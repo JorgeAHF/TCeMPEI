@@ -1,27 +1,54 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 from pydantic import BaseModel, Field
+
+RoleType = Literal["admin", "analyst", "reviewer", "viewer"]
 
 
 class UserCreate(BaseModel):
     username: str
     password: str
     full_name: Optional[str]
-    role: str = "analyst"
+    role: RoleType = "analyst"
 
 
 class UserOut(BaseModel):
     id: int
     username: str
     full_name: Optional[str]
-    role: str
+    role: RoleType
     created_at: datetime
 
     class Config:
         orm_mode = True
+
+
+class AuthLoginResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    access_expires_in_minutes: int
+    refresh_expires_in_minutes: int
+    user: UserOut
+
+
+class AuthRefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class AuthRefreshResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    access_expires_in_minutes: int
+    refresh_expires_in_minutes: int
+
+
+class AuthLogoutRequest(BaseModel):
+    refresh_token: str
 
 
 class BridgeCreate(BaseModel):
@@ -160,6 +187,66 @@ class AnalysisResultOut(AnalysisResultCreate):
 
     class Config:
         orm_mode = True
+
+
+class AnalysisPreviewRequest(BaseModel):
+    cable_id: int
+    csv_column_name: Optional[str] = None
+    normalized_file_id: Optional[int] = None
+    segment_pct_start: float = Field(default=0.0, ge=0.0, lt=100.0)
+    segment_pct_end: float = Field(default=100.0, gt=0.0, le=100.0)
+    nperseg: int = Field(default=2048, ge=256, le=16384)
+    noverlap_pct: float = Field(default=50.0, ge=0.0, le=90.0)
+    peak_threshold: float = Field(default=0.2, ge=0.0, le=1.0)
+    min_distance_hz: float = Field(default=0.05, gt=0.0)
+    n_harmonics: int = Field(default=3, ge=1, le=10)
+    f0_hint_hz: Optional[float] = Field(default=None, gt=0.0)
+    f0_manual_hz: Optional[float] = Field(default=None, gt=0.0)
+
+
+class AnalysisPeakOut(BaseModel):
+    frequency_hz: float
+    amplitude: float
+
+
+class AnalysisHarmonicOut(BaseModel):
+    order: int
+    target_frequency_hz: float
+    frequency_hz: float
+    amplitude: float
+
+
+class AnalysisSeriesOut(BaseModel):
+    time_s: List[float]
+    accel: List[float]
+
+
+class AnalysisSpectrumOut(BaseModel):
+    freq_hz: List[float]
+    amplitude: Optional[List[float]] = None
+    power: Optional[List[float]] = None
+
+
+class AnalysisPreviewResponse(BaseModel):
+    run_id: int
+    acquisition_id: int
+    cable_id: int
+    channel_name: str
+    normalized_file_id: int
+    segment_pct_start: float
+    segment_pct_end: float
+    segment_samples: int
+    fs_hz: float
+    df_hz: float
+    f0_suggested_hz: float
+    f0_selected_hz: float
+    snr_metric: float
+    candidate_peaks: List[AnalysisPeakOut]
+    harmonics: List[AnalysisHarmonicOut]
+    signal_full: AnalysisSeriesOut
+    signal_segment: AnalysisSeriesOut
+    fft: AnalysisSpectrumOut
+    psd: AnalysisSpectrumOut
 
 
 class SemaforoItem(BaseModel):

@@ -8,9 +8,20 @@ CREATE TABLE IF NOT EXISTS users (
     id BIGSERIAL PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     full_name TEXT,
-    role TEXT NOT NULL CHECK (role IN ('admin', 'analyst', 'consulta', 'invitado')),
+    role TEXT NOT NULL CHECK (role IN ('admin', 'analyst', 'reviewer', 'viewer')),
     password_hash TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_jti TEXT NOT NULL UNIQUE,
+    issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    revoked_reason TEXT,
+    created_ip TEXT
 );
 
 -- 4.1 Catalog
@@ -111,11 +122,14 @@ CREATE TABLE IF NOT EXISTS sensor_installations (
 
 -- Evita solapamiento del mismo sensor en cables distintos
 CREATE EXTENSION IF NOT EXISTS btree_gist;
-CREATE INDEX IF NOT EXISTS idx_sensor_installations_no_overlap
-ON sensor_installations
-USING GIST (
-    sensor_id,
-    tstzrange(installed_from, COALESCE(installed_to, 'infinity')) WITH &&);
+ALTER TABLE sensor_installations
+DROP CONSTRAINT IF EXISTS excl_sensor_installations_no_overlap;
+ALTER TABLE sensor_installations
+ADD CONSTRAINT excl_sensor_installations_no_overlap
+EXCLUDE USING GIST (
+    sensor_id WITH =,
+    tstzrange(installed_from, installed_to) WITH &&
+);
 
 -- 4.2 Acquisitions
 CREATE TABLE IF NOT EXISTS acquisitions (
@@ -133,14 +147,19 @@ CREATE TABLE IF NOT EXISTS raw_files (
     id BIGSERIAL PRIMARY KEY,
     acquisition_id BIGINT NOT NULL REFERENCES acquisitions(id) ON DELETE CASCADE,
     file_kind TEXT NOT NULL CHECK (file_kind IN ('raw_csv', 'normalized_csv')),
+    source_raw_file_id BIGINT REFERENCES raw_files(id) ON DELETE SET NULL,
+    version_no INTEGER NOT NULL CHECK (version_no > 0),
     storage_path TEXT NOT NULL,
     original_filename TEXT NOT NULL,
     sha256 CHAR(64) NOT NULL,
     file_size_bytes BIGINT NOT NULL CHECK (file_size_bytes > 0),
     parser_version TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_raw_files_sha UNIQUE (sha256)
+    CONSTRAINT uq_raw_files_acq_kind_version UNIQUE (acquisition_id, file_kind, version_no),
+    CONSTRAINT uq_raw_files_acq_kind_sha UNIQUE (acquisition_id, file_kind, sha256)
 );
+
+CREATE INDEX IF NOT EXISTS idx_raw_files_source_raw_file_id ON raw_files(source_raw_file_id);
 
 CREATE TABLE IF NOT EXISTS acquisition_channels (
     id BIGSERIAL PRIMARY KEY,
@@ -216,12 +235,9 @@ CREATE TABLE IF NOT EXISTS k_calibrations (
     CONSTRAINT chk_k_valid_to_gt_from CHECK (valid_to IS NULL OR valid_to > valid_from)
 );
 
--- Evita traslapes de K por tirante
-CREATE INDEX IF NOT EXISTS idx_k_calibrations_no_overlap
-ON k_calibrations
-USING GIST (
-    cable_id,
-    tstzrange(valid_from, COALESCE(valid_to, 'infinity')) WITH &&);
+-- Orden de consulta para historial de K por tirante.
+CREATE INDEX IF NOT EXISTS idx_k_calibrations_cable_valid_from
+ON k_calibrations (cable_id, valid_from DESC);
 
 -- 5 Análisis
 CREATE TABLE IF NOT EXISTS analysis_runs (

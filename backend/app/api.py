@@ -30,8 +30,9 @@ from .models import (
     CableConfigSnapshot,
     User,
     AuditLog,
+    RefreshToken,
 )
-from .security import hash_password, verify_password, create_access_token, decode_token
+from .security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
 from .services.business import (
     effective_fu,
     select_cable_state_version,
@@ -39,13 +40,21 @@ from .services.business import (
     validate_installations_no_overlap,
     validate_k_no_overlap,
 )
-from .services.ingestion import normalize_from_raw, register_raw_file
+from .services.ingestion import (
+    DuplicateRawFileInAcquisitionError,
+    build_raw_preview,
+    get_next_file_version,
+    normalize_from_raw,
+    register_raw_file,
+)
+from .services.signal_analysis import build_analysis_preview
 from .utils import save_upload
 
 router = APIRouter()
 Base.metadata.create_all(bind=engine)
 settings = get_settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+ALLOWED_ROLES = {"admin", "analyst", "reviewer", "viewer"}
 
 
 def ensure_admin(user: User):
@@ -91,13 +100,100 @@ def get_user(db: Session, username: str) -> User | None:
     return db.query(User).filter(User.username == username).first()
 
 
-@router.post("/auth/token")
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def _persist_refresh_token(db: Session, user_id: int, jti: str, expires_at: datetime) -> RefreshToken:
+    token_row = RefreshToken(user_id=user_id, token_jti=jti, expires_at=expires_at)
+    db.add(token_row)
+    db.commit()
+    db.refresh(token_row)
+    return token_row
+
+
+def _revoke_refresh_token(db: Session, jti: str, reason: str) -> None:
+    row = db.query(RefreshToken).filter(RefreshToken.token_jti == jti).first()
+    if row and row.revoked_at is None:
+        row.revoked_at = datetime.utcnow()
+        row.revoked_reason = reason
+        db.add(row)
+        db.commit()
+
+
+@router.post("/auth/login", response_model=schemas.AuthLoginResponse)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = get_user(db, form_data.username)
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
+    if user.role not in ALLOWED_ROLES:
+        raise HTTPException(status_code=403, detail="User role is not allowed")
     access_token = create_access_token({"sub": str(user.id)})
-    return {"access_token": access_token, "token_type": "bearer", "user": schemas.UserOut.from_orm(user)}
+    refresh_token, jti, refresh_exp = create_refresh_token({"sub": str(user.id)})
+    _persist_refresh_token(db, user.id, jti, refresh_exp)
+    log_action(db, "auth", user.id, "login", user.id)
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "access_expires_in_minutes": settings.access_token_expire_minutes,
+        "refresh_expires_in_minutes": settings.refresh_token_expire_minutes,
+        "user": schemas.UserOut.from_orm(user),
+    }
+
+
+@router.post("/auth/token")
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    # Backward-compatible endpoint expected by OAuth2PasswordBearer and current Dash login.
+    return login(form_data, db)
+
+
+@router.post("/auth/refresh", response_model=schemas.AuthRefreshResponse)
+def refresh_access_token(payload: schemas.AuthRefreshRequest, db: Session = Depends(get_db)):
+    try:
+        token_payload = decode_token(payload.refresh_token, expected_type="refresh")
+        user_id = int(token_payload.get("sub"))
+        jti = token_payload.get("jti")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    if not jti:
+        raise HTTPException(status_code=401, detail="Malformed refresh token")
+
+    token_row = db.query(RefreshToken).filter(RefreshToken.token_jti == jti).first()
+    if not token_row or token_row.revoked_at is not None:
+        raise HTTPException(status_code=401, detail="Refresh token revoked")
+    if token_row.expires_at <= datetime.utcnow():
+        _revoke_refresh_token(db, jti, "expired")
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # Rotation: revoke old token and issue a new pair.
+    _revoke_refresh_token(db, jti, "rotated")
+    access_token = create_access_token({"sub": str(user.id)})
+    new_refresh_token, new_jti, refresh_exp = create_refresh_token({"sub": str(user.id)})
+    _persist_refresh_token(db, user.id, new_jti, refresh_exp)
+    log_action(db, "auth", user.id, "refresh", user.id)
+    return {
+        "access_token": access_token,
+        "refresh_token": new_refresh_token,
+        "token_type": "bearer",
+        "access_expires_in_minutes": settings.access_token_expire_minutes,
+        "refresh_expires_in_minutes": settings.refresh_token_expire_minutes,
+    }
+
+
+@router.post("/auth/logout")
+def logout(payload: schemas.AuthLogoutRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        token_payload = decode_token(payload.refresh_token, expected_type="refresh")
+        jti = token_payload.get("jti")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    if not jti:
+        raise HTTPException(status_code=401, detail="Malformed refresh token")
+    _revoke_refresh_token(db, jti, "logout")
+    log_action(db, "auth", user.id, "logout", user.id)
+    return {"status": "ok"}
 
 
 @router.post("/users", response_model=schemas.UserOut)
@@ -403,8 +499,9 @@ def create_weighing_campaign(payload: schemas.WeighingCampaignCreate, db: Sessio
 
 
 @router.post("/analysis-runs", response_model=schemas.AnalysisRunOut)
-def create_analysis_run(payload: schemas.AnalysisRunCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
-    run = AnalysisRun(**payload.dict(), created_by_user_id=user.id)
+def create_analysis_run(payload: schemas.AnalysisRunCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst", "reviewer"))):
+    run_payload = payload.dict(exclude={"created_by_user_id"})
+    run = AnalysisRun(**run_payload, created_by_user_id=user.id)
     db.add(run)
     db.commit()
     db.refresh(run)
@@ -412,8 +509,52 @@ def create_analysis_run(payload: schemas.AnalysisRunCreate, db: Session = Depend
     return run
 
 
+@router.post("/analysis-runs/{run_id}/preview", response_model=schemas.AnalysisPreviewResponse)
+def preview_analysis_run(
+    run_id: int,
+    payload: schemas.AnalysisPreviewRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst", "reviewer", "viewer")),
+):
+    run = db.get(AnalysisRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="AnalysisRun not found")
+    acq = db.get(Acquisition, run.acquisition_id)
+    if not acq:
+        raise HTTPException(status_code=404, detail="Acquisition not found for run")
+    cable = db.get(Cable, payload.cable_id)
+    if not cable:
+        raise HTTPException(status_code=404, detail="Cable not found")
+    if cable.bridge_id != acq.bridge_id:
+        raise HTTPException(status_code=400, detail="Cable does not belong to acquisition bridge")
+
+    try:
+        result = build_analysis_preview(
+            db=db,
+            run_id=run_id,
+            acquisition=acq,
+            cable=cable,
+            csv_column_name=payload.csv_column_name,
+            normalized_file_id=payload.normalized_file_id,
+            segment_pct_start=payload.segment_pct_start,
+            segment_pct_end=payload.segment_pct_end,
+            nperseg=payload.nperseg,
+            noverlap_pct=payload.noverlap_pct,
+            peak_threshold=payload.peak_threshold,
+            min_distance_hz=payload.min_distance_hz,
+            n_harmonics=payload.n_harmonics,
+            f0_hint_hz=payload.f0_hint_hz,
+            f0_manual_hz=payload.f0_manual_hz,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    log_action(db, "analysis_run", run.id, "preview", user.id, notes=f"cable_id={payload.cable_id}")
+    return result
+
+
 @router.post("/analysis-results", response_model=schemas.AnalysisResultOut)
-def create_analysis_result(payload: schemas.AnalysisResultCreate, db: Session = Depends(get_db)):
+def create_analysis_result(payload: schemas.AnalysisResultCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst", "reviewer"))):
     run = db.get(AnalysisRun, payload.analysis_run_id)
     if not run:
         raise HTTPException(status_code=404, detail="AnalysisRun not found")
@@ -442,6 +583,7 @@ def create_analysis_result(payload: schemas.AnalysisResultCreate, db: Session = 
     db.add(res)
     db.commit()
     db.refresh(res)
+    log_action(db, "analysis_result", res.id, "create", user.id)
     return res
 
 
@@ -512,26 +654,112 @@ def upload_acquisition_file(
     parser_version: str,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst")),
 ):
     acq = db.get(Acquisition, acq_id)
     if not acq:
         raise HTTPException(status_code=404, detail="Acquisition not found")
 
     data = file.file.read()
-    path, digest = save_upload(Path(settings.data_root), "raw" if file_kind == "raw_csv" else "normalized", file.filename, data)
-    record = RawFile(
-        acquisition_id=acq_id,
-        file_kind=file_kind,
-        storage_path=str(path),
-        original_filename=file.filename,
-        sha256=digest,
-        file_size_bytes=len(data),
-        parser_version=parser_version,
+    if file_kind not in {"raw_csv", "normalized_csv"}:
+        raise HTTPException(status_code=400, detail="file_kind must be raw_csv or normalized_csv")
+
+    warning = None
+    if file_kind == "raw_csv":
+        try:
+            record, warning = register_raw_file(db, acq, parser_version, file.filename, Path(settings.data_root), data)
+        except DuplicateRawFileInAcquisitionError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{exc}. raw_file_id existente={exc.existing_file_id}",
+            )
+    else:
+        version_no = get_next_file_version(db, acq_id, "normalized_csv")
+        versioned_name = f"acq{acq_id}_normalized_v{version_no:04d}_{Path(file.filename).name.replace(' ', '_')}"
+        path, digest = save_upload(Path(settings.data_root), "normalized", versioned_name, data)
+        record = RawFile(
+            acquisition_id=acq_id,
+            file_kind="normalized_csv",
+            source_raw_file_id=None,
+            version_no=version_no,
+            storage_path=str(path),
+            original_filename=file.filename,
+            sha256=digest,
+            file_size_bytes=len(data),
+            parser_version=parser_version,
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    log_action(db, "raw_file", record.id, "create", user.id, notes=file_kind)
+    return {
+        "id": record.id,
+        "sha256": record.sha256,
+        "path": record.storage_path,
+        "version_no": record.version_no,
+        "warning": warning,
+    }
+
+
+@router.get("/acquisitions/{acq_id}/raw-preview")
+def preview_raw_csv(
+    acq_id: int,
+    raw_file_id: int | None = None,
+    header_row_override: int | None = Query(default=None, ge=0),
+    data_start_marker: str = "DATA_START",
+    max_lines: int = Query(default=20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst", "reviewer", "viewer")),
+):
+    acq = db.get(Acquisition, acq_id)
+    if not acq:
+        raise HTTPException(status_code=404, detail="Acquisition not found")
+    q = db.query(RawFile).filter(RawFile.acquisition_id == acq_id, RawFile.file_kind == "raw_csv")
+    if raw_file_id is not None:
+        raw_record = q.filter(RawFile.id == raw_file_id).first()
+    else:
+        raw_record = q.order_by(RawFile.version_no.desc(), RawFile.created_at.desc()).first()
+    if not raw_record:
+        raise HTTPException(status_code=404, detail="No raw_csv file found for acquisition")
+    content = Path(raw_record.storage_path).read_bytes()
+    try:
+        preview = build_raw_preview(
+            content=content,
+            data_start_marker=data_start_marker,
+            header_row_override=header_row_override,
+            max_lines=max_lines,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    preview.update(
+        {
+            "raw_file_id": raw_record.id,
+            "version_no": raw_record.version_no,
+            "original_filename": raw_record.original_filename,
+        }
     )
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-    return {"id": record.id, "sha256": digest, "path": record.storage_path}
+    return preview
+
+
+@router.post("/acquisitions/{acq_id}/parse-preview")
+def parse_preview_raw_csv(
+    acq_id: int,
+    raw_file_id: int | None = None,
+    header_row_override: int | None = Query(default=None, ge=0),
+    data_start_marker: str = "DATA_START",
+    max_lines: int = Query(default=20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst", "reviewer", "viewer")),
+):
+    return preview_raw_csv(
+        acq_id=acq_id,
+        raw_file_id=raw_file_id,
+        header_row_override=header_row_override,
+        data_start_marker=data_start_marker,
+        max_lines=max_lines,
+        db=db,
+        user=user,
+    )
 
 
 @router.post("/acquisitions/{acq_id}/raw-upload")
@@ -546,15 +774,30 @@ def upload_raw_csv(
     if not acq:
         raise HTTPException(status_code=404, detail="Acquisition not found")
     data = file.file.read()
-    record = register_raw_file(db, acq, parser_version, file.filename, Path(settings.data_root), data)
+    try:
+        record, warning = register_raw_file(db, acq, parser_version, file.filename, Path(settings.data_root), data)
+    except DuplicateRawFileInAcquisitionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{exc}. raw_file_id existente={exc.existing_file_id}",
+        )
     log_action(db, "raw_file", record.id, "create", user.id, notes="raw_csv")
-    return {"id": record.id, "sha256": record.sha256, "path": record.storage_path}
+    return {
+        "id": record.id,
+        "sha256": record.sha256,
+        "path": record.storage_path,
+        "version_no": record.version_no,
+        "warning": warning,
+    }
 
 
 @router.post("/acquisitions/{acq_id}/normalize")
 def normalize_acquisition(
     acq_id: int,
     parser_version: str,
+    raw_file_id: int | None = None,
+    header_row_override: int | None = Query(default=None, ge=0),
+    data_start_marker: str = "DATA_START",
     mapping: List[dict] = Body(...),
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
@@ -562,29 +805,42 @@ def normalize_acquisition(
     acq = db.get(Acquisition, acq_id)
     if not acq:
         raise HTTPException(status_code=404, detail="Acquisition not found")
-    norm_record, channels, path = normalize_from_raw(
-        db=db,
-        acq=acq,
-        mapping=mapping,
-        data_root=Path(settings.data_root),
-        parser_version=parser_version,
-    )
+    try:
+        norm_record, channels, path = normalize_from_raw(
+            db=db,
+            acq=acq,
+            mapping=mapping,
+            data_root=Path(settings.data_root),
+            parser_version=parser_version,
+            raw_file_id=raw_file_id,
+            header_row_override=header_row_override,
+            data_start_marker=data_start_marker,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     log_action(db, "raw_file", norm_record.id, "create", user.id, notes="normalized_csv")
     return {
         "normalized_file_id": norm_record.id,
+        "raw_file_id": norm_record.source_raw_file_id,
+        "version_no": norm_record.version_no,
         "path": path,
         "channels_created": len(channels),
     }
 
 
 @router.post("/weighing-measurements", response_model=schemas.WeighingMeasurementOut)
-def create_weighing_measurement(payload: schemas.WeighingMeasurementCreate, db: Session = Depends(get_db)):
+def create_weighing_measurement(
+    payload: schemas.WeighingMeasurementCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst")),
+):
     if payload.measured_tension_tf <= 0:
         raise HTTPException(status_code=400, detail="measured_tension_tf must be > 0")
     wm = WeighingMeasurement(**payload.dict())
     db.add(wm)
     db.commit()
     db.refresh(wm)
+    log_action(db, "weighing_measurement", wm.id, "create", user.id)
     return wm
 
 
@@ -594,7 +850,11 @@ def list_weighing_measurements(db: Session = Depends(get_db)):
 
 
 @router.post("/cable-config-snapshots", response_model=schemas.CableConfigSnapshotOut)
-def create_snapshot(payload: schemas.CableConfigSnapshotCreate, db: Session = Depends(get_db)):
+def create_snapshot(
+    payload: schemas.CableConfigSnapshotCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst")),
+):
     if payload.strands_active > payload.strands_total:
         raise HTTPException(status_code=400, detail="strands_active must be <= strands_total")
     if payload.effective_length_m <= 0 or payload.mu_value_kg_m <= 0:
@@ -603,6 +863,7 @@ def create_snapshot(payload: schemas.CableConfigSnapshotCreate, db: Session = De
     db.add(snap)
     db.commit()
     db.refresh(snap)
+    log_action(db, "cable_config_snapshot", snap.id, "create", user.id)
     return snap
 
 
@@ -615,7 +876,11 @@ def list_snapshots(cable_id: int | None = None, db: Session = Depends(get_db)):
 
 
 @router.post("/k-calibrations", response_model=schemas.KCalibrationOut)
-def create_k_calibration(payload: schemas.KCalibrationCreate, db: Session = Depends(get_db)):
+def create_k_calibration(
+    payload: schemas.KCalibrationCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst")),
+):
     if payload.k_value <= 0:
         raise HTTPException(status_code=400, detail="k_value must be > 0")
     if payload.valid_to and payload.valid_to <= payload.valid_from:
@@ -626,6 +891,7 @@ def create_k_calibration(payload: schemas.KCalibrationCreate, db: Session = Depe
     db.add(candidate)
     db.commit()
     db.refresh(candidate)
+    log_action(db, "k_calibration", candidate.id, "create", user.id)
     return candidate
 
 
@@ -642,6 +908,7 @@ def upload_weighing_attachment(
     campaign_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst")),
 ):
     wc = db.get(WeighingCampaign, campaign_id)
     if not wc:
@@ -657,6 +924,7 @@ def upload_weighing_attachment(
     db.add(attach)
     db.commit()
     db.refresh(attach)
+    log_action(db, "weighing_attachment", attach.id, "create", user.id)
     return {"id": attach.id, "sha256": digest, "path": attach.storage_path}
 
 

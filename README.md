@@ -16,6 +16,7 @@ Sistema local para gestión histórica y análisis de tirantes de puentes atiran
 - `backend/app/main.py`: FastAPI (health/info, auto creación de carpetas).
 - `backend/app/dash_app.py`: UI Dash con wizards mínimos (adquisición, pesaje, análisis) llamando a la API.
 - Ingesta inicial de adquisiciones: subir CSV crudo, registrar hash y normalizar con mapeo columna→sensor→cable (flags de instalación).
+- Preview de análisis dinámico: endpoint para acelerograma completo/segmento, FFT, PSD Welch y sugerencia asistida de f0.
 - Semáforo/histórico: semáforo con ranking opcional top N, histórico con gráficas T y f0 por tirante.
 - `backend/app/db/schema.sql`: definición completa del modelo relacional.
 - `backend/app/services/business.py`: reglas vigencia K, versiones de estado, validación de instalaciones, Fu efectivo.
@@ -37,18 +38,23 @@ docker-compose up --build
 # API: http://localhost:8000/health
 # Dash: http://localhost:8050 (se levanta con el servicio `dash` en docker-compose)
 
-# 4) Pruebas de lógica pura
-docker-compose run --rm backend pytest
-# Para usar SQLite en pruebas API locales:
-# DATABASE_URL=sqlite:///./test_api.db pytest backend/app/tests/test_api.py
+# 4) Migraciones (alembic)
+docker-compose run --rm backend bash -lc "cd /app && alembic -c alembic.ini upgrade head"
 
-# 5) (opcional) Levantar UI Dash fuera de compose
+# 5) Pruebas
+docker-compose run --rm backend bash -lc "cd /app && PYTHONPATH=/app pytest"
+
+# 6) (opcional) Levantar UI Dash fuera de compose
 # BACKEND_URL=http://localhost:8000 python -m app.dash_app --host 0.0.0.0 --port 8050
 ```
 
 ## Autenticación
-- Obtener token: `POST /auth/token` con form `username`/`password` (por defecto HS256 con SECRET_KEY).
-- Requiere bearer token en endpoints protegidos (catalogo, adquisiciones, etc.). Roles permitidos: admin, analyst para alta/modificación.
+- Login (access+refresh): `POST /auth/login` con form `username`/`password`.
+- Compatibilidad OAuth2: `POST /auth/token` (mantiene formato bearer).
+- Renovar access token: `POST /auth/refresh`.
+- Cerrar sesión (revoca refresh): `POST /auth/logout`.
+- Preview análisis interactivo: `POST /analysis-runs/{run_id}/preview`.
+- Requiere bearer token en endpoints protegidos. Roles base: admin, analyst, reviewer, viewer.
 
 ### Uso “for dummies” del token en la UI Dash
 1. Consigue un token JWT: `curl -X POST -F "username=TU_USER" -F "password=TU_PASS" http://localhost:8000/auth/token` (el JSON trae `access_token`).

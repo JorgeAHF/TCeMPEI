@@ -194,6 +194,14 @@ def acquisition_page():
             dbc.Textarea(id="acq-notes", placeholder="Notas", className="mb-2"),
             html.Div("Selecciona el archivo crudo. Se calculará hash y se guardará en /data/raw."),
             dcc.Upload(id="raw-upload", children=html.Div(["Arrastra o haz click para subir CSV"]), multiple=False, className="mt-2"),
+            dbc.Row(
+                [
+                    dbc.Col(dbc.Input(id="raw-data-start-marker", value="DATA_START", placeholder="Marcador inicio datos"), md=4),
+                    dbc.Col(dbc.Input(id="raw-header-row-override", type="number", placeholder="Fila cabecera manual (opcional)"), md=4),
+                    dbc.Col(dbc.Button("Releer cabeceras", id="raw-preview-submit", color="secondary", outline=True), md=4),
+                ],
+                className="gy-2 mt-1",
+            ),
             dbc.Button("Guardar raw", id="raw-submit", color="primary", className="mt-2"),
             html.Div(id="raw-status", className="mt-2"),
             html.Hr(),
@@ -203,9 +211,10 @@ def acquisition_page():
                 id="map-table",
                 columns=[
                     {"name": "csv_column_name", "id": "csv_column_name", "editable": False},
-                    {"name": "sensor_id", "id": "sensor_id", "editable": False},
+                    {"name": "sensor_id", "id": "sensor_id", "presentation": "dropdown"},
                     {"name": "cable_id", "id": "cable_id", "presentation": "dropdown"},
                     {"name": "height_m", "id": "height_m", "editable": True},
+                    {"name": "multichannel_intentional", "id": "multichannel_intentional", "presentation": "dropdown"},
                 ],
                 data=[],
                 editable=True,
@@ -326,6 +335,39 @@ def analisis_page():
             dbc.Textarea(id="an-notes", placeholder="Notas", className="mb-2"),
             dbc.Button("Crear run", id="an-submit", color="primary"),
             html.Div(id="an-status", className="mt-2"),
+            html.Hr(),
+            html.H5("Preview interactivo por tirante"),
+            dbc.Row(
+                [
+                    dbc.Col(dbc.Input(id="pre-col", placeholder="csv_column_name (opcional)", type="text"), md=4),
+                    dbc.Col(dbc.Input(id="pre-f0-hint", placeholder="f0_hint_hz (opcional)", type="number"), md=4),
+                    dbc.Col(dbc.Input(id="pre-f0-manual", placeholder="f0_manual_hz (opcional)", type="number"), md=4),
+                ],
+                className="gy-2 mb-2",
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(dbc.Input(id="pre-seg-start", value=0, placeholder="segment_pct_start", type="number"), md=3),
+                    dbc.Col(dbc.Input(id="pre-seg-end", value=100, placeholder="segment_pct_end", type="number"), md=3),
+                    dbc.Col(dbc.Input(id="pre-nperseg", value=2048, placeholder="nperseg", type="number"), md=3),
+                    dbc.Col(dbc.Input(id="pre-noverlap", value=50, placeholder="noverlap_pct", type="number"), md=3),
+                ],
+                className="gy-2 mb-2",
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(dbc.Input(id="pre-threshold", value=0.2, placeholder="peak_threshold", type="number"), md=4),
+                    dbc.Col(dbc.Input(id="pre-min-dist", value=0.05, placeholder="min_distance_hz", type="number"), md=4),
+                    dbc.Col(dbc.Input(id="pre-harmonics", value=3, placeholder="n_harmonics", type="number"), md=4),
+                ],
+                className="gy-2 mb-2",
+            ),
+            dbc.Button("Previsualizar análisis", id="pre-submit", color="info"),
+            html.Div(id="pre-status", className="mt-2"),
+            dcc.Graph(id="pre-full-graph"),
+            dcc.Graph(id="pre-seg-graph"),
+            dcc.Graph(id="pre-fft-graph"),
+            dcc.Graph(id="pre-psd-graph"),
             html.Hr(),
             html.H5("Resultado de tirante (K se selecciona automáticamente por fecha de acquisition)"),
             dbc.Row(
@@ -1483,14 +1525,30 @@ def delete_strand(active_cell, table_data, token):
     State("acq-date", "value"),
     State("acq-notes", "value"),
     State("user-info", "data"),
+    State("raw-data-start-marker", "value"),
+    State("raw-header-row-override", "value"),
     prevent_initial_call=True,
 )
-def submit_raw(_, contents, filename, acq_id, token, bridge_dd, bridge_selected, fs_val, date_str, notes_val, user):
+def submit_raw(
+    _,
+    contents,
+    filename,
+    acq_id,
+    token,
+    bridge_dd,
+    bridge_selected,
+    fs_val,
+    date_str,
+    notes_val,
+    user,
+    data_start_marker,
+    header_row_override,
+):
     if not token:
         return "Login requerido.", None, None, dash.no_update
     if not contents:
         return "Sube un archivo", None, None, dash.no_update
-    header, b64data = contents.split(",", 1)
+    _, b64data = contents.split(",", 1)
     data = base64.b64decode(b64data)
     digest = hashlib.sha256(data).hexdigest()
     files = {"file": (filename, data, "text/csv")}
@@ -1517,6 +1575,7 @@ def submit_raw(_, contents, filename, acq_id, token, bridge_dd, bridge_selected,
             acq_id = acq_res["id"]
         else:
             return f"Error creando adquisición: {acq_res}", None, None, dash.no_update
+    marker = data_start_marker or "DATA_START"
     res = call_api(
         "POST",
         f"/acquisitions/{acq_id}/raw-upload",
@@ -1524,15 +1583,76 @@ def submit_raw(_, contents, filename, acq_id, token, bridge_dd, bridge_selected,
         params={"parser_version": "v1"},
         token=token,
     )
+    if isinstance(res, dict) and res.get("error"):
+        return f"Error guardando raw: {res['error']}", None, None, acq_id
+
+    raw_file_id = res.get("id") if isinstance(res, dict) else None
+    preview_params = {"data_start_marker": marker, "raw_file_id": raw_file_id}
+    if header_row_override is not None and header_row_override != "":
+        preview_params["header_row_override"] = int(header_row_override)
+    preview = call_api(
+        "GET",
+        f"/acquisitions/{acq_id}/raw-preview",
+        params=preview_params,
+        token=token,
+    )
     headers = []
-    try:
-        txt = data.decode("utf-8").splitlines()
-        idx = next(i for i, line in enumerate(txt) if "DATA_START" in line) + 1
-        headers = [h.strip() for h in txt[idx].split(",") if h.strip()]
-    except Exception:
-        headers = []
-    info = {"filename": filename, "sha256": digest, "bytes": len(data)}
-    return f"Raw guardado. sha256={digest}", headers, info, acq_id
+    preview_note = ""
+    if isinstance(preview, dict) and preview.get("error"):
+        preview_note = (
+            " No se pudieron detectar cabeceras automáticamente. "
+            "Ajusta 'Fila cabecera manual' y presiona 'Releer cabeceras'."
+        )
+    else:
+        headers = preview.get("headers", []) if isinstance(preview, dict) else []
+    warning = res.get("warning") if isinstance(res, dict) else None
+    warning_msg = f" Advertencia: {warning}" if warning else ""
+    info = {
+        "filename": filename,
+        "sha256": digest,
+        "bytes": len(data),
+        "raw_file_id": raw_file_id,
+        "version_no": res.get("version_no") if isinstance(res, dict) else None,
+        "data_start_marker": marker,
+        "header_row_override": preview_params.get("header_row_override"),
+    }
+    return f"Raw guardado. sha256={digest}.{warning_msg}{preview_note}", headers, info, acq_id
+
+
+@app.callback(
+    Output("raw-status", "children", allow_duplicate=True),
+    Output("raw-headers-store", "data", allow_duplicate=True),
+    Output("raw-info-store", "data", allow_duplicate=True),
+    Input("raw-preview-submit", "n_clicks"),
+    State("acq-id-store", "data"),
+    State("raw-info-store", "data"),
+    State("token-store", "data"),
+    State("raw-data-start-marker", "value"),
+    State("raw-header-row-override", "value"),
+    prevent_initial_call=True,
+)
+def refresh_raw_preview(_, acq_id, raw_info, token, data_start_marker, header_row_override):
+    if not token:
+        return "Login requerido.", dash.no_update, dash.no_update
+    if not acq_id or not isinstance(raw_info, dict) or not raw_info.get("raw_file_id"):
+        return "Primero guarda un archivo raw.", dash.no_update, dash.no_update
+
+    marker = data_start_marker or raw_info.get("data_start_marker") or "DATA_START"
+    params = {"raw_file_id": raw_info.get("raw_file_id"), "data_start_marker": marker}
+    if header_row_override is not None and header_row_override != "":
+        params["header_row_override"] = int(header_row_override)
+    preview = call_api("GET", f"/acquisitions/{acq_id}/raw-preview", params=params, token=token)
+    if isinstance(preview, dict) and preview.get("error"):
+        return f"No se pudieron leer cabeceras: {preview['error']}", dash.no_update, dash.no_update
+
+    updated_info = dict(raw_info)
+    updated_info["data_start_marker"] = marker
+    updated_info["header_row_override"] = params.get("header_row_override")
+    return (
+        f"Cabeceras detectadas en fila {preview.get('header_row_index')}.",
+        preview.get("headers", []),
+        updated_info,
+    )
 
 
 @app.callback(
@@ -1549,28 +1669,51 @@ def populate_map_table(headers):
             continue
         if str(h).lower() in ("time", "time_s", "timestamp"):
             continue
-        cleaned.append({"csv_column_name": h, "sensor_id": h, "cable_id": None, "height_m": None})
+        cleaned.append(
+            {
+                "csv_column_name": h,
+                "sensor_id": None,
+                "cable_id": None,
+                "height_m": None,
+                "multichannel_intentional": False,
+            }
+        )
     return cleaned
 
 
 @app.callback(
     Output("map-table", "dropdown"),
     Input("cables-store", "data"),
+    Input("sensors-store", "data"),
     Input("selected-bridge-store", "data"),
     Input("acq-bridge-dropdown", "value"),
 )
-def set_map_dropdown(cables, selected_bridge, bridge_dropdown):
+def set_map_dropdown(cables, sensors, selected_bridge, bridge_dropdown):
     """Populate cable_id dropdown with tirantes del puente seleccionado."""
     bridge_id = bridge_dropdown or selected_bridge
     if not bridge_id or not isinstance(cables, list):
-        return {"cable_id": {"options": []}}
+        return {"cable_id": {"options": []}, "sensor_id": {"options": []}, "multichannel_intentional": {"options": []}}
     options = []
     for c in cables:
         if c.get("bridge_id") != bridge_id:
             continue
         label = c.get("nombre_en_puente") or c.get("nombre") or f"T-{c.get('id')}"
         options.append({"label": label, "value": c.get("id")})
-    return {"cable_id": {"options": options}}
+    sensor_options = []
+    if isinstance(sensors, list):
+        for s in sensors:
+            sensor_label = s.get("serial_or_asset_id") or f"sensor-{s.get('id')}"
+            sensor_options.append({"label": sensor_label, "value": s.get("id")})
+    return {
+        "cable_id": {"options": options},
+        "sensor_id": {"options": sensor_options},
+        "multichannel_intentional": {
+            "options": [
+                {"label": "No", "value": False},
+                {"label": "Sí", "value": True},
+            ]
+        },
+    }
 
 
 @app.callback(
@@ -1579,35 +1722,87 @@ def set_map_dropdown(cables, selected_bridge, bridge_dropdown):
     Input("norm-submit", "n_clicks"),
     State("map-table", "data"),
     State("acq-id-store", "data"),
+    State("raw-info-store", "data"),
     State("token-store", "data"),
+    State("raw-data-start-marker", "value"),
+    State("raw-header-row-override", "value"),
     prevent_initial_call=True,
 )
-def submit_norm(_, map_rows, acq_id, token):
+def submit_norm(_, map_rows, acq_id, raw_info, token, data_start_marker, header_row_override):
     if not token:
         return "Login requerido.", dash.no_update
     if not acq_id:
         return "Crea la adquisición y sube el raw primero.", dash.no_update
     mapping = map_rows or []
-    # Validaciones básicas
-    cables = [m.get("cable_id") for m in mapping if m.get("cable_id")]
-    if len(cables) != len(set(cables)):
-        return "Hay tirantes duplicados en el mapeo. Ajusta antes de normalizar.", dash.no_update
-    missing_height = [m.get("csv_column_name") for m in mapping if m.get("cable_id") and not m.get("height_m")]
-    if missing_height:
-        return f"Falta altura en columnas: {', '.join(missing_height)}", dash.no_update
+    if not mapping:
+        return "No hay mapeo para normalizar.", dash.no_update
+
+    missing_cable = [m.get("csv_column_name") for m in mapping if not m.get("cable_id")]
+    if missing_cable:
+        return f"Canales sin tirante asignado: {', '.join(missing_cable)}", dash.no_update
+
+    missing_sensor = [m.get("csv_column_name") for m in mapping if not m.get("sensor_id")]
+    if missing_sensor:
+        return f"Canales sin sensor asignado: {', '.join(missing_sensor)}", dash.no_update
+
+    invalid_height = []
+    for m in mapping:
+        h = m.get("height_m")
+        if h is None or h == "":
+            invalid_height.append(m.get("csv_column_name"))
+            continue
+        try:
+            if float(h) <= 0:
+                invalid_height.append(m.get("csv_column_name"))
+        except Exception:
+            invalid_height.append(m.get("csv_column_name"))
+    if invalid_height:
+        return f"Altura inválida en columnas: {', '.join(invalid_height)}", dash.no_update
+
+    per_cable = {}
+    for m in mapping:
+        cid = m.get("cable_id")
+        per_cable.setdefault(cid, []).append(m)
+    duplicated_unintended = []
+    for rows in per_cable.values():
+        if len(rows) <= 1:
+            continue
+        if not all(bool(r.get("multichannel_intentional")) for r in rows):
+            duplicated_unintended.append(str(rows[0].get("cable_id")))
+    if duplicated_unintended:
+        return (
+            "Tirante duplicado no intencional en cable_id: "
+            + ", ".join(duplicated_unintended)
+            + ". Activa multicanal intencional en todos sus canales.",
+            dash.no_update,
+        )
+
+    params = {"parser_version": "v1", "data_start_marker": data_start_marker or "DATA_START"}
+    if isinstance(raw_info, dict) and raw_info.get("raw_file_id"):
+        params["raw_file_id"] = raw_info.get("raw_file_id")
+    if header_row_override is not None and header_row_override != "":
+        params["header_row_override"] = int(header_row_override)
+    elif isinstance(raw_info, dict) and raw_info.get("header_row_override") is not None:
+        params["header_row_override"] = raw_info.get("header_row_override")
+
     res = call_api(
         "POST",
         f"/acquisitions/{acq_id}/normalize",
-        params={"parser_version": "v1"},
+        params=params,
         json=[
             {
-                **m,
+                "csv_column_name": m.get("csv_column_name"),
+                "sensor_id": m.get("sensor_id"),
                 "cable_id": m.get("cable_id"),
+                "height_m": m.get("height_m"),
+                "multichannel_intentional": bool(m.get("multichannel_intentional")),
             }
             for m in mapping
         ],
         token=token,
     )
+    if isinstance(res, dict) and res.get("error"):
+        return "Error de mapeo.", str(res)
     return "Mapeo válido.", str(res)
 
 
@@ -1621,9 +1816,12 @@ def submit_norm(_, map_rows, acq_id, token):
     State("w-equip", "value"),
     State("w-temp", "value"),
     State("w-notes", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_weighing(_, bridge_id, date_str, by, method, equip, temp, notes):
+def submit_weighing(_, bridge_id, date_str, by, method, equip, temp, notes, token):
+    if not token:
+        return "Login requerido."
     payload = {
         "bridge_id": bridge_id,
         "performed_at": datetime.fromisoformat(date_str) if date_str else None,
@@ -1633,7 +1831,7 @@ def submit_weighing(_, bridge_id, date_str, by, method, equip, temp, notes):
         "temperature_C": temp,
         "notes": notes,
     }
-    res = call_api("POST", "/weighing-campaigns", json=payload)
+    res = call_api("POST", "/weighing-campaigns", json=payload, token=token)
     return str(res)
 
 
@@ -1645,9 +1843,12 @@ def submit_weighing(_, bridge_id, date_str, by, method, equip, temp, notes):
     State("wm-tension", "value"),
     State("wm-temp", "value"),
     State("wm-notes", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_weighing_measurement(_, campaign_id, cable_id, tension, temp, notes):
+def submit_weighing_measurement(_, campaign_id, cable_id, tension, temp, notes, token):
+    if not token:
+        return "Login requerido."
     payload = {
         "weighing_campaign_id": campaign_id,
         "cable_id": cable_id,
@@ -1655,7 +1856,7 @@ def submit_weighing_measurement(_, campaign_id, cable_id, tension, temp, notes):
         "measured_temperature_C": temp,
         "notes": notes,
     }
-    res = call_api("POST", "/weighing-measurements", json=payload)
+    res = call_api("POST", "/weighing-measurements", json=payload, token=token)
     return str(res)
 
 
@@ -1671,9 +1872,12 @@ def submit_weighing_measurement(_, campaign_id, cable_id, tension, temp, notes):
     State("snap-st", "value"),
     State("snap-strand-type", "value"),
     State("snap-notes", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_snapshot(_, cable_id, state_id, L, mu, mu_basis, sa, st, strand_type_id, notes):
+def submit_snapshot(_, cable_id, state_id, L, mu, mu_basis, sa, st, strand_type_id, notes, token):
+    if not token:
+        return "Login requerido."
     payload = {
         "cable_id": cable_id,
         "source_state_version_id": state_id,
@@ -1685,7 +1889,7 @@ def submit_snapshot(_, cable_id, state_id, L, mu, mu_basis, sa, st, strand_type_
         "strand_type_id": strand_type_id,
         "notes": notes,
     }
-    res = call_api("POST", "/cable-config-snapshots", json=payload)
+    res = call_api("POST", "/cable-config-snapshots", json=payload, token=token)
     return str(res)
 
 
@@ -1701,9 +1905,12 @@ def submit_snapshot(_, cable_id, state_id, L, mu, mu_basis, sa, st, strand_type_
     State("kc-algo", "value"),
     State("kc-user", "value"),
     State("kc-notes", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_kc(_, cable_id, meas_id, snap_id, k_val, v_from, v_to, algo, user_id, notes):
+def submit_kc(_, cable_id, meas_id, snap_id, k_val, v_from, v_to, algo, user_id, notes, token):
+    if not token:
+        return "Login requerido."
     payload = {
         "cable_id": cable_id,
         "derived_from_weighing_measurement_id": meas_id,
@@ -1715,7 +1922,7 @@ def submit_kc(_, cable_id, meas_id, snap_id, k_val, v_from, v_to, algo, user_id,
         "computed_by_user_id": user_id,
         "notes": notes,
     }
-    res = call_api("POST", "/k-calibrations", json=payload)
+    res = call_api("POST", "/k-calibrations", json=payload, token=token)
     return str(res)
 
 
@@ -1726,17 +1933,117 @@ def submit_kc(_, cable_id, meas_id, snap_id, k_val, v_from, v_to, algo, user_id,
     State("an-user", "value"),
     State("an-algo", "value"),
     State("an-notes", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_analysis_run(_, acq_id, user_id, algo, notes):
+def submit_analysis_run(_, acq_id, user_id, algo, notes, token):
+    if not token:
+        return "Login requerido."
     payload = {
         "acquisition_id": acq_id,
         "created_by_user_id": user_id,
         "algorithm_version": algo,
         "notes": notes,
     }
-    res = call_api("POST", "/analysis-runs", json=payload)
+    res = call_api("POST", "/analysis-runs", json=payload, token=token)
     return str(res)
+
+
+@app.callback(
+    Output("pre-status", "children"),
+    Output("pre-full-graph", "figure"),
+    Output("pre-seg-graph", "figure"),
+    Output("pre-fft-graph", "figure"),
+    Output("pre-psd-graph", "figure"),
+    Output("res-f0", "value"),
+    Output("res-df", "value"),
+    Output("res-snr", "value"),
+    Input("pre-submit", "n_clicks"),
+    State("res-run", "value"),
+    State("res-cable", "value"),
+    State("pre-col", "value"),
+    State("pre-seg-start", "value"),
+    State("pre-seg-end", "value"),
+    State("pre-nperseg", "value"),
+    State("pre-noverlap", "value"),
+    State("pre-threshold", "value"),
+    State("pre-min-dist", "value"),
+    State("pre-harmonics", "value"),
+    State("pre-f0-hint", "value"),
+    State("pre-f0-manual", "value"),
+    State("token-store", "data"),
+    prevent_initial_call=True,
+)
+def preview_analysis(
+    _,
+    run_id,
+    cable_id,
+    csv_column_name,
+    seg_start,
+    seg_end,
+    nperseg,
+    noverlap,
+    threshold,
+    min_dist,
+    n_harmonics,
+    f0_hint,
+    f0_manual,
+    token,
+):
+    if not token:
+        return "Login requerido.", {}, {}, {}, {}, dash.no_update, dash.no_update, dash.no_update
+    if not run_id or not cable_id:
+        return "Define analysis_run_id y cable_id para previsualizar.", {}, {}, {}, {}, dash.no_update, dash.no_update, dash.no_update
+
+    payload = {
+        "cable_id": cable_id,
+        "csv_column_name": csv_column_name or None,
+        "segment_pct_start": seg_start if seg_start is not None else 0.0,
+        "segment_pct_end": seg_end if seg_end is not None else 100.0,
+        "nperseg": int(nperseg) if nperseg else 2048,
+        "noverlap_pct": noverlap if noverlap is not None else 50.0,
+        "peak_threshold": threshold if threshold is not None else 0.2,
+        "min_distance_hz": min_dist if min_dist is not None else 0.05,
+        "n_harmonics": int(n_harmonics) if n_harmonics else 3,
+        "f0_hint_hz": f0_hint,
+        "f0_manual_hz": f0_manual,
+    }
+    res = call_api("POST", f"/analysis-runs/{run_id}/preview", json=payload, token=token)
+    if isinstance(res, dict) and res.get("error"):
+        return f"Error en preview: {res['error']}", {}, {}, {}, {}, dash.no_update, dash.no_update, dash.no_update
+
+    full_fig = px.line(
+        x=res.get("signal_full", {}).get("time_s", []),
+        y=res.get("signal_full", {}).get("accel", []),
+        title="Acelerograma completo",
+        labels={"x": "t [s]", "y": "aceleración"},
+    )
+    seg_fig = px.line(
+        x=res.get("signal_segment", {}).get("time_s", []),
+        y=res.get("signal_segment", {}).get("accel", []),
+        title="Acelerograma (segmento)",
+        labels={"x": "t [s]", "y": "aceleración"},
+    )
+    fft_fig = px.line(
+        x=res.get("fft", {}).get("freq_hz", []),
+        y=res.get("fft", {}).get("amplitude", []),
+        title="FFT",
+        labels={"x": "f [Hz]", "y": "amplitud"},
+    )
+    psd_fig = px.line(
+        x=res.get("psd", {}).get("freq_hz", []),
+        y=res.get("psd", {}).get("power", []),
+        title="PSD (Welch)",
+        labels={"x": "f [Hz]", "y": "potencia"},
+    )
+
+    status = (
+        f"Canal: {res.get('channel_name')} | "
+        f"f0 sugerida={res.get('f0_suggested_hz'):.4f} Hz | "
+        f"f0 seleccionada={res.get('f0_selected_hz'):.4f} Hz | "
+        f"SNR={res.get('snr_metric'):.2f}"
+    )
+    return status, full_fig, seg_fig, fft_fig, psd_fig, res.get("f0_selected_hz"), res.get("df_hz"), res.get("snr_metric")
 
 
 @app.callback(
@@ -1748,9 +2055,12 @@ def submit_analysis_run(_, acq_id, user_id, algo, notes):
     State("res-df", "value"),
     State("res-snr", "value"),
     State("res-qual", "value"),
+    State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_analysis_result(_, run_id, cable_id, f0, df_hz, snr, quality):
+def submit_analysis_result(_, run_id, cable_id, f0, df_hz, snr, quality, token):
+    if not token:
+        return "Login requerido."
     payload = {
         "analysis_run_id": run_id,
         "cable_id": cable_id,
@@ -1760,7 +2070,7 @@ def submit_analysis_result(_, run_id, cable_id, f0, df_hz, snr, quality):
         "snr_metric": snr,
         "quality_flag": quality,
     }
-    res = call_api("POST", "/analysis-results", json=payload)
+    res = call_api("POST", "/analysis-results", json=payload, token=token)
     return str(res)
 
 

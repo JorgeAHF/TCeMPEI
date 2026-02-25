@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -27,6 +28,18 @@ class User(Base):
     role = Column(String, nullable=False)
     password_hash = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token_jti = Column(String(36), nullable=False, unique=True, index=True)
+    issued_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime)
+    revoked_reason = Column(String)
+    created_ip = Column(String)
 
 
 class Bridge(Base):
@@ -145,12 +158,20 @@ class RawFile(Base):
     id = Column(Integer, primary_key=True)
     acquisition_id = Column(Integer, ForeignKey("acquisitions.id"), nullable=False)
     file_kind = Column(String, nullable=False)
+    source_raw_file_id = Column(Integer, ForeignKey("raw_files.id"))
+    version_no = Column(Integer, nullable=False, default=1)
     storage_path = Column(String, nullable=False)
     original_filename = Column(String, nullable=False)
     sha256 = Column(String(64), nullable=False)
     file_size_bytes = Column(Integer, nullable=False)
     parser_version = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    source_raw_file = relationship("RawFile", remote_side=[id], uselist=False)
+
+    __table_args__ = (
+        UniqueConstraint("acquisition_id", "file_kind", "version_no", name="uq_raw_files_acq_kind_version_orm"),
+        UniqueConstraint("acquisition_id", "file_kind", "sha256", name="uq_raw_files_acq_kind_sha_orm"),
+    )
 
 
 class AcquisitionChannel(Base):

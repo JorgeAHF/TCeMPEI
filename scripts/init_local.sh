@@ -12,6 +12,12 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   exit 0
 fi
 
+PSQL_URL="${DATABASE_URL/+psycopg2/}"
+if [[ "${PSQL_URL}" != postgresql://* && "${PSQL_URL}" != postgres://* ]]; then
+  echo "DATABASE_URL must be PostgreSQL. Current value is not supported for schema apply."
+  exit 1
+fi
+
 echo "Applying schema..."
-psql "${DATABASE_URL}" -f backend/app/db/schema.sql
+psql "${PSQL_URL}" -f backend/app/db/schema.sql
 echo "Done."

@@ -97,7 +97,23 @@ def validate_installations_no_overlap(installations: Iterable[SensorInstallation
 
 def effective_fu(state: CableStateVersion) -> float:
     """Return Fu for the cable state following override/default rule."""
-    return state.fu_override if state.fu_override is not None else state.strand_type_fu_default
+    # Support both internal dataclass names and ORM attribute names.
+    override = getattr(state, "fu_override", None)
+    if override is None:
+        override = getattr(state, "Fu_override", None)
+    if override is not None:
+        return float(override)
+
+    default_fu = getattr(state, "strand_type_fu_default", None)
+    if default_fu is None:
+        strand_type = getattr(state, "strand_type", None)
+        if strand_type is not None:
+            default_fu = getattr(strand_type, "Fu_default", None)
+    if default_fu is None:
+        default_fu = getattr(state, "Fu_default", None)
+    if default_fu is None:
+        raise ValueError("No Fu value available for cable state")
+    return float(default_fu)
 
 
 def validate_k_no_overlap(calibrations: Iterable[KCalibration], new_one: KCalibration) -> None:
