@@ -59,6 +59,10 @@ docker-compose run --rm backend pytest
 ## Notas de catálogo
 - Al crear un puente se puede indicar `num_tirantes`; el sistema genera tirantes placeholder `T-01..T-n` listos para editar su estado y propiedades.
 
+## Documentación Fase 0
+- Se agregó la documentación de cierre y planeación en `docs/fase0/README.md`.
+- Incluye especificación funcional, reglas de negocio, RBAC, criterios de aceptación y backlog de Fase 1.
+
 ## Siguientes pasos sugeridos
 - Implementar endpoints CRUD/seguridad (hashing, roles) y wiring real a PostgreSQL con SQLAlchemy.
 - Completar flujos UI Dash descritos en la especificación (wizards de adquisición, pesaje y análisis).

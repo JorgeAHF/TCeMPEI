@@ -7,6 +7,7 @@ import httpx
 from dash import Input, Output, State, dash_table, dcc, html
 import base64
 import json
+import hashlib
 import plotly.express as px
 import pandas as pd
 
@@ -180,40 +181,40 @@ def acquisition_page():
         [
             html.H3("Adquisición"),
             dcc.Store(id="raw-headers-store"),
+            dcc.Store(id="acq-id-store"),
+            dcc.Store(id="raw-info-store"),
+            html.H5("Datos de campaña + Raw"),
             dbc.Row(
                 [
-                    dbc.Col(dbc.Input(id="acq-bridge", placeholder="bridge_id", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="acq-date", placeholder="YYYY-MM-DD HH:MM", type="text"), md=3),
-                    dbc.Col(dbc.Input(id="acq-operator", placeholder="operator_user_id", type="number"), md=3),
-                    dbc.Col(dbc.Input(id="acq-fs", placeholder="Fs_Hz", type="number"), md=3),
+                    dbc.Col(dbc.Input(id="acq-date", type="datetime-local", placeholder="Fecha/hora adquisición"), md=4),
+                    dbc.Col(dbc.Input(id="acq-fs", placeholder="Fs_Hz", type="number"), md=4),
                 ],
                 className="gy-2 mb-2",
             ),
             dbc.Textarea(id="acq-notes", placeholder="Notas", className="mb-2"),
-            dbc.Button("Crear adquisición", id="acq-submit", color="primary"),
-            html.Div(id="acq-status", className="mt-2"),
-            html.Hr(),
-            html.H5("Paso 2: subir CSV crudo (DATA_START)"),
-            dcc.Upload(id="raw-upload", children=html.Div(["Arrastra o haz click para subir CSV"]), multiple=False),
-            dbc.Input(id="raw-parser", placeholder="parser_version", value="v1", className="mt-2"),
-            dbc.Input(id="raw-acq-id", placeholder="acquisition_id", type="number", className="mt-2"),
+            html.Div("Selecciona el archivo crudo. Se calculará hash y se guardará en /data/raw."),
+            dcc.Upload(id="raw-upload", children=html.Div(["Arrastra o haz click para subir CSV"]), multiple=False, className="mt-2"),
             dbc.Button("Guardar raw", id="raw-submit", color="primary", className="mt-2"),
             html.Div(id="raw-status", className="mt-2"),
-            html.H5("Paso 3-4: mapeo y normalizado"),
+            html.Hr(),
+            html.H5("Paso 3: Mapeo columna → sensor → tirante"),
             html.P("Completa tirante, sensor y altura por columna. El sistema precarga encabezados del CSV."),
             dash_table.DataTable(
                 id="map-table",
                 columns=[
                     {"name": "csv_column_name", "id": "csv_column_name", "editable": False},
-                    {"name": "sensor_id", "id": "sensor_id", "editable": True},
-                    {"name": "cable_id", "id": "cable_id", "editable": True},
+                    {"name": "sensor_id", "id": "sensor_id", "editable": False},
+                    {"name": "cable_id", "id": "cable_id", "presentation": "dropdown"},
                     {"name": "height_m", "id": "height_m", "editable": True},
                 ],
                 data=[],
                 editable=True,
+                style_table={"maxHeight": "300px", "overflowY": "auto"},
+                style_cell={"textAlign": "center"},
             ),
-            dbc.Input(id="norm-parser", placeholder="parser_version", value="v1", className="mt-2"),
-            dbc.Input(id="norm-acq-id", placeholder="acquisition_id", type="number", className="mt-2"),
+            html.Div(id="map-status", className="mt-2"),
+            html.Hr(),
+            html.H5("Paso 4: Generar normalizado"),
             dbc.Button("Generar normalizado", id="norm-submit", color="success", className="mt-2"),
             html.Div(id="norm-status", className="mt-2"),
         ],
@@ -578,12 +579,29 @@ app.layout = dbc.Container(
         dcc.Store(id="selected-bridge-store"),
         dcc.Store(id="selected-bridge-name"),
         dcc.Store(id="cables-store"),
+        dcc.Store(id="sensors-store"),
         dbc.Row(
             [
                 dbc.Col(sidebar, width=2, style={"borderRight": "1px solid #eaeaea", "minHeight": "100vh"}),
                 dbc.Col(
                     [
-                        html.Div(id="header-info", className="p-2"),
+                        dbc.Row(
+                            [
+                                dbc.Col(dbc.Alert(id="header-user", color="light", className="mb-2"), md=8),
+                                dbc.Col(
+                                    [
+                                        html.Div(id="header-bridge-label", className="fw-bold mb-1"),
+                                        dcc.Dropdown(
+                                            id="acq-bridge-dropdown",
+                                            options=[],
+                                            placeholder="Selecciona puente",
+                                        ),
+                                    ],
+                                    md=4,
+                                ),
+                            ],
+                            className="g-2 p-2",
+                        ),
                         content,
                         modal_cable,
                         modal_strand,
@@ -598,7 +616,14 @@ app.layout = dbc.Container(
     fluid=True,
 )
 
-
+# Validation layout para registrar componentes aunque no estén visibles en la página actual
+app.validation_layout = html.Div(
+    [
+        app.layout,
+        acquisition_page(),
+        catalogo_page(),
+    ]
+)
 @app.callback(
     Output("page-content", "children"),
     Output("sidebar", "style"),
@@ -648,17 +673,28 @@ def do_login(_, username, password):
 
 
 @app.callback(
-    Output("header-info", "children"),
+    Output("header-user", "children"),
+    Output("header-bridge-label", "children"),
     Input("user-info", "data"),
     Input("selected-bridge-name", "data"),
 )
 def update_header(user, bridge_name):
     username = user.get("username") if isinstance(user, dict) else None
-    return dbc.Alert(
-        f"Usuario: {username or 'No autenticado'} | Puente: {bridge_name or 'No seleccionado'}",
-        color="light",
-        className="mb-3",
+    return (
+        f"Usuario: {username or 'No autenticado'}",
+        f"Puente: {bridge_name or 'No seleccionado'}",
     )
+
+
+@app.callback(
+    Output("acq-bridge-dropdown", "options", allow_duplicate=True),
+    Input("bridges-table", "data"),
+    prevent_initial_call=True,
+)
+def fill_bridge_dropdown(bridges):
+    if not isinstance(bridges, list):
+        return dash.no_update
+    return [{"label": b.get("nombre"), "value": b.get("id")} for b in bridges if b.get("id")]
 
 
 @app.callback(
@@ -756,8 +792,11 @@ def submit_strand(_, nombre, diam, area, e, fu, mu, notas, token):
 @app.callback(
     Output("bridges-table", "data", allow_duplicate=True),
     Output("cables-store", "data"),
+    Output("sensors-store", "data"),
     Output("catalogo-status", "children"),
     Output("catalogo-tables", "children"),
+    Output("acq-bridge-dropdown", "options", allow_duplicate=True),
+    Output("acq-bridge-dropdown", "value", allow_duplicate=True),
     Input("refresh-catalogo", "n_clicks"),
     State("token-store", "data"),
     prevent_initial_call=True,
@@ -765,6 +804,7 @@ def submit_strand(_, nombre, diam, area, e, fu, mu, notas, token):
 def refresh_catalogo(_, token):
     bridges = call_api("GET", "/bridges", token=token)
     cables = call_api("GET", "/cables", token=token)
+    sensors = call_api("GET", "/sensors", token=token)
     strands = call_api("GET", "/strand-types", token=token)
     status = ""
     if isinstance(bridges, dict) and bridges.get("error"):
@@ -826,8 +866,11 @@ def refresh_catalogo(_, token):
         if isinstance(bridges, list)
         else [],
         cables if isinstance(cables, list) else [],
+        sensors if isinstance(sensors, list) else [],
         status,
         html.Div([html.H6("Tipos de torón"), strands_table]),
+        [{"label": b.get("nombre"), "value": b.get("id")} for b in bridges] if isinstance(bridges, list) else [],
+        None,
     )
 
 
@@ -881,6 +924,7 @@ def open_bridge_modal(n_new, active_cell, n_close, table_data):
     Output("selected-bridge-store", "data"),
     Output("selected-bridge-name", "data"),
     Output("cables-states-table", "data", allow_duplicate=True),
+    Output("acq-bridge-dropdown", "value", allow_duplicate=True),
     Input("bridges-table", "selected_rows"),
     State("bridges-table", "data"),
     State("cables-store", "data"),
@@ -889,7 +933,7 @@ def open_bridge_modal(n_new, active_cell, n_close, table_data):
 )
 def select_bridge(selected_rows, bridges_data, cables_data, token):
     if not selected_rows or not bridges_data:
-        return None, None, []
+        return None, None, [], dash.no_update
     row = bridges_data[selected_rows[0]]
     bridge_id = row.get("id")
     bridge_name = row.get("nombre")
@@ -914,7 +958,7 @@ def select_bridge(selected_rows, bridges_data, cables_data, token):
                 "eliminar": "🗑 Eliminar",
             }
         )
-    return bridge_id, bridge_name, summary
+    return bridge_id, bridge_name, summary, bridge_id
 
 
 @app.callback(
@@ -1424,54 +1468,71 @@ def delete_strand(active_cell, table_data, token):
         return f"Torón {sid} eliminado.", remaining
     return f"Error eliminando torón {sid}: {res}", dash.no_update
 @app.callback(
-    Output("acq-status", "children"),
-    Input("acq-submit", "n_clicks"),
-    State("acq-bridge", "value"),
-    State("acq-date", "value"),
-    State("acq-operator", "value"),
-    State("acq-fs", "value"),
-    State("acq-notes", "value"),
-    prevent_initial_call=True,
-)
-def submit_acquisition(_, bridge_id, date_str, operator_id, fs, notes):
-    payload = {
-        "bridge_id": bridge_id,
-        "acquired_at": datetime.fromisoformat(date_str) if date_str else None,
-        "operator_user_id": operator_id,
-        "Fs_Hz": fs,
-        "notes": notes,
-    }
-    token = dash.callback_context.states.get("token-store.data") if dash.callback_context else None
-    res = call_api("POST", "/acquisitions", json=payload, token=token)
-    return str(res)
-
-
-@app.callback(
     Output("raw-status", "children"),
-    Output("raw-headers-store", "data"),
+    Output("raw-headers-store", "data", allow_duplicate=True),
+    Output("raw-info-store", "data", allow_duplicate=True),
+    Output("acq-id-store", "data", allow_duplicate=True),
     Input("raw-submit", "n_clicks"),
     State("raw-upload", "contents"),
     State("raw-upload", "filename"),
-    State("raw-parser", "value"),
-    State("raw-acq-id", "value"),
+    State("acq-id-store", "data"),
+    State("token-store", "data"),
+    State("acq-bridge-dropdown", "value"),
+    State("selected-bridge-store", "data"),
+    State("acq-fs", "value"),
+    State("acq-date", "value"),
+    State("acq-notes", "value"),
+    State("user-info", "data"),
     prevent_initial_call=True,
 )
-def submit_raw(_, contents, filename, parser_version, acq_id):
+def submit_raw(_, contents, filename, acq_id, token, bridge_dd, bridge_selected, fs_val, date_str, notes_val, user):
+    if not token:
+        return "Login requerido.", None, None, dash.no_update
     if not contents:
-        return "Sube un archivo", None
+        return "Sube un archivo", None, None, dash.no_update
     header, b64data = contents.split(",", 1)
     data = base64.b64decode(b64data)
+    digest = hashlib.sha256(data).hexdigest()
     files = {"file": (filename, data, "text/csv")}
-    token = dash.callback_context.states.get("token-store.data") if dash.callback_context else None
-    res = call_api("POST", f"/acquisitions/{acq_id}/raw-upload", files=files, params={"parser_version": parser_version}, token=token)
+    # crear acquisition on-the-fly if needed
+    # simple payload from current fields if not exists
+    if not acq_id:
+        bridge = bridge_dd or bridge_selected
+        operator_id = user.get("id") if isinstance(user, dict) else None
+        acquired_at = None
+        if date_str:
+            try:
+                acquired_at = datetime.fromisoformat(date_str).isoformat()
+            except Exception:
+                acquired_at = date_str
+        payload = {
+            "bridge_id": bridge,
+            "acquired_at": acquired_at,
+            "operator_user_id": operator_id,
+            "Fs_Hz": fs_val,
+            "notes": notes_val,
+        }
+        acq_res = call_api("POST", "/acquisitions", json=payload, token=token)
+        if isinstance(acq_res, dict) and acq_res.get("id"):
+            acq_id = acq_res["id"]
+        else:
+            return f"Error creando adquisición: {acq_res}", None, None, dash.no_update
+    res = call_api(
+        "POST",
+        f"/acquisitions/{acq_id}/raw-upload",
+        files=files,
+        params={"parser_version": "v1"},
+        token=token,
+    )
     headers = []
     try:
         txt = data.decode("utf-8").splitlines()
         idx = next(i for i, line in enumerate(txt) if "DATA_START" in line) + 1
         headers = [h.strip() for h in txt[idx].split(",") if h.strip()]
-    except Exception as e:
-        pass
-    return str(res), headers
+    except Exception:
+        headers = []
+    info = {"filename": filename, "sha256": digest, "bytes": len(data)}
+    return f"Raw guardado. sha256={digest}", headers, info, acq_id
 
 
 @app.callback(
@@ -1482,28 +1543,72 @@ def submit_raw(_, contents, filename, parser_version, acq_id):
 def populate_map_table(headers):
     if not headers:
         return []
-    return [{"csv_column_name": h, "sensor_id": None, "cable_id": None, "height_m": None} for h in headers if h]
+    cleaned = []
+    for h in headers:
+        if not h:
+            continue
+        if str(h).lower() in ("time", "time_s", "timestamp"):
+            continue
+        cleaned.append({"csv_column_name": h, "sensor_id": h, "cable_id": None, "height_m": None})
+    return cleaned
 
 
 @app.callback(
+    Output("map-table", "dropdown"),
+    Input("cables-store", "data"),
+    Input("selected-bridge-store", "data"),
+    Input("acq-bridge-dropdown", "value"),
+)
+def set_map_dropdown(cables, selected_bridge, bridge_dropdown):
+    """Populate cable_id dropdown with tirantes del puente seleccionado."""
+    bridge_id = bridge_dropdown or selected_bridge
+    if not bridge_id or not isinstance(cables, list):
+        return {"cable_id": {"options": []}}
+    options = []
+    for c in cables:
+        if c.get("bridge_id") != bridge_id:
+            continue
+        label = c.get("nombre_en_puente") or c.get("nombre") or f"T-{c.get('id')}"
+        options.append({"label": label, "value": c.get("id")})
+    return {"cable_id": {"options": options}}
+
+
+@app.callback(
+    Output("map-status", "children"),
     Output("norm-status", "children"),
     Input("norm-submit", "n_clicks"),
     State("map-table", "data"),
-    State("norm-parser", "value"),
-    State("norm-acq-id", "value"),
+    State("acq-id-store", "data"),
     State("token-store", "data"),
     prevent_initial_call=True,
 )
-def submit_norm(_, map_rows, parser_version, acq_id, token):
+def submit_norm(_, map_rows, acq_id, token):
+    if not token:
+        return "Login requerido.", dash.no_update
+    if not acq_id:
+        return "Crea la adquisición y sube el raw primero.", dash.no_update
     mapping = map_rows or []
+    # Validaciones básicas
+    cables = [m.get("cable_id") for m in mapping if m.get("cable_id")]
+    if len(cables) != len(set(cables)):
+        return "Hay tirantes duplicados en el mapeo. Ajusta antes de normalizar.", dash.no_update
+    missing_height = [m.get("csv_column_name") for m in mapping if m.get("cable_id") and not m.get("height_m")]
+    if missing_height:
+        return f"Falta altura en columnas: {', '.join(missing_height)}", dash.no_update
     res = call_api(
         "POST",
         f"/acquisitions/{acq_id}/normalize",
-        params={"parser_version": parser_version},
-        json=mapping,
+        params={"parser_version": "v1"},
+        json=[
+            {
+                **m,
+                "cable_id": m.get("cable_id"),
+            }
+            for m in mapping
+        ],
         token=token,
     )
-    return str(res)
+    return "Mapeo válido.", str(res)
 
 
 @app.callback(
