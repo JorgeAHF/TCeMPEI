@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import pandas as pd
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Acquisition, AcquisitionChannel, Cable, RawFile, Sensor, SensorInstallation
 from app.utils import save_upload
@@ -93,20 +93,22 @@ def build_raw_preview(
     }
 
 
-def get_next_file_version(db: Session, acquisition_id: int, file_kind: str) -> int:
-    max_version = (
-        db.query(func.max(RawFile.version_no))
-        .filter(RawFile.acquisition_id == acquisition_id, RawFile.file_kind == file_kind)
-        .scalar()
+async def get_next_file_version(db: AsyncSession, acquisition_id: int, file_kind: str) -> int:
+    result = await db.execute(
+        select(func.max(RawFile.version_no)).where(
+            RawFile.acquisition_id == acquisition_id,
+            RawFile.file_kind == file_kind,
+        )
     )
+    max_version = result.scalar()
     return (max_version or 0) + 1
 
 
-def _resolve_raw_file(db: Session, acq_id: int, raw_file_id: int | None) -> RawFile | None:
-    q = db.query(RawFile).filter(RawFile.acquisition_id == acq_id, RawFile.file_kind == "raw_csv")
+async def _resolve_raw_file(db: AsyncSession, acq_id: int, raw_file_id: int | None) -> RawFile | None:
+    q = select(RawFile).where(RawFile.acquisition_id == acq_id, RawFile.file_kind == "raw_csv")
     if raw_file_id is not None:
-        return q.filter(RawFile.id == raw_file_id).first()
-    return q.order_by(RawFile.version_no.desc(), RawFile.created_at.desc()).first()
+        return (await db.execute(q.where(RawFile.id == raw_file_id))).scalar_one_or_none()
+    return (await db.execute(q.order_by(RawFile.version_no.desc(), RawFile.created_at.desc()))).scalars().first()
 
 
 def _build_versioned_filename(acq_id: int, file_kind: str, version_no: int, original_filename: str) -> str:
@@ -115,37 +117,34 @@ def _build_versioned_filename(acq_id: int, file_kind: str, version_no: int, orig
     return f"acq{acq_id}_{kind}_v{version_no:04d}_{base}"
 
 
-def _status_for_installation(
-    db: Session, sensor_id: int, cable_id: int, acquired_at: datetime
+async def _status_for_installation(
+    db: AsyncSession, sensor_id: int, cable_id: int, acquired_at: datetime
 ) -> str:
-    installs: List[SensorInstallation] = (
-        db.query(SensorInstallation)
-        .filter(
-            SensorInstallation.sensor_id == sensor_id,
-            SensorInstallation.installed_from <= acquired_at,
-            (SensorInstallation.installed_to.is_(None)) | (SensorInstallation.installed_to >= acquired_at),
-        )
-        .all()
+    stmt = select(SensorInstallation).where(
+        SensorInstallation.sensor_id == sensor_id,
+        SensorInstallation.installed_from <= acquired_at,
+        (SensorInstallation.installed_to.is_(None)) | (SensorInstallation.installed_to >= acquired_at),
     )
+    installs = (await db.execute(stmt)).scalars().all()
     if not installs:
         return "warning_no_installation"
     cables = {inst.cable_id for inst in installs}
     return "ok" if cable_id in cables else "warning_mismatch_installation"
 
 
-def register_raw_file(
-    db: Session, acq: Acquisition, parser_version: str, file_name: str, data_root: Path, content: bytes
+async def register_raw_file(
+    db: AsyncSession, acq: Acquisition, parser_version: str, file_name: str, data_root: Path, content: bytes
 ) -> tuple[RawFile, str | None]:
     digest = hashlib.sha256(content).hexdigest()
     duplicate_in_same_acq = (
-        db.query(RawFile)
-        .filter(
-            RawFile.acquisition_id == acq.id,
-            RawFile.file_kind == "raw_csv",
-            RawFile.sha256 == digest,
+        await db.execute(
+            select(RawFile).where(
+                RawFile.acquisition_id == acq.id,
+                RawFile.file_kind == "raw_csv",
+                RawFile.sha256 == digest,
+            )
         )
-        .first()
-    )
+    ).scalar_one_or_none()
     if duplicate_in_same_acq:
         raise DuplicateRawFileInAcquisitionError(
             "Archivo duplicado exacto en la misma campaña",
@@ -153,14 +152,14 @@ def register_raw_file(
         )
 
     duplicate_other = (
-        db.query(RawFile)
-        .filter(
-            RawFile.file_kind == "raw_csv",
-            RawFile.sha256 == digest,
-            RawFile.acquisition_id != acq.id,
+        await db.execute(
+            select(RawFile).where(
+                RawFile.file_kind == "raw_csv",
+                RawFile.sha256 == digest,
+                RawFile.acquisition_id != acq.id,
+            )
         )
-        .first()
-    )
+    ).scalar_one_or_none()
     warning = None
     if duplicate_other:
         warning = (
@@ -168,7 +167,7 @@ def register_raw_file(
             f"(acquisition_id={duplicate_other.acquisition_id}, raw_file_id={duplicate_other.id})."
         )
 
-    version_no = get_next_file_version(db, acq.id, "raw_csv")
+    version_no = await get_next_file_version(db, acq.id, "raw_csv")
     versioned_name = _build_versioned_filename(acq.id, "raw_csv", version_no, file_name)
     path, digest = save_upload(data_root, "raw", versioned_name, content)
     record = RawFile(
@@ -183,13 +182,13 @@ def register_raw_file(
         parser_version=parser_version,
     )
     db.add(record)
-    db.commit()
-    db.refresh(record)
+    await db.commit()
+    await db.refresh(record)
     return record, warning
 
 
-def normalize_from_raw(
-    db: Session,
+async def normalize_from_raw(
+    db: AsyncSession,
     acq: Acquisition,
     mapping: Iterable[dict],
     data_root: Path,
@@ -198,7 +197,7 @@ def normalize_from_raw(
     header_row_override: int | None = None,
     data_start_marker: str = "DATA_START",
 ) -> Tuple[RawFile, List[AcquisitionChannel], str]:
-    raw_record = _resolve_raw_file(db=db, acq_id=acq.id, raw_file_id=raw_file_id)
+    raw_record = await _resolve_raw_file(db=db, acq_id=acq.id, raw_file_id=raw_file_id)
     if not raw_record:
         raise ValueError("No hay raw_csv registrado para esta adquisición")
     raw_bytes = Path(raw_record.storage_path).read_bytes()
@@ -247,10 +246,10 @@ def normalize_from_raw(
             sensor_id = int(sensor_id)
         except (TypeError, ValueError):
             raise ValueError(f"sensor_id inválido para columna {col}: {sensor_id}")
-        cable: Cable | None = db.get(Cable, cable_id)
+        cable: Cable | None = await db.get(Cable, cable_id)
         if not cable:
             raise ValueError(f"Cable {cable_id} no existe")
-        sensor: Sensor | None = db.get(Sensor, sensor_id)
+        sensor: Sensor | None = await db.get(Sensor, sensor_id)
         if not sensor:
             raise ValueError(f"Sensor {sensor_id} no existe")
         cable_name = cable.nombre_en_puente
@@ -294,7 +293,7 @@ def normalize_from_raw(
             seq += 1
         rename_map[col] = target_col
         normalized_labels.append(target_col)
-        status_flag = _status_for_installation(db, sensor_id, cable_id, acq.acquired_at)
+        status_flag = await _status_for_installation(db, sensor_id, cable_id, acq.acquired_at)
         channel_rows.append(
             AcquisitionChannel(
                 acquisition_id=acq.id,
@@ -316,7 +315,7 @@ def normalize_from_raw(
         df_norm[col] = pd.to_numeric(df_norm[col], errors="coerce")
     # No se eliminan filas; NaN se preserva (policy conservadora)
 
-    version_no = get_next_file_version(db, acq.id, "normalized_csv")
+    version_no = await get_next_file_version(db, acq.id, "normalized_csv")
     fname = _build_versioned_filename(
         acq.id,
         "normalized_csv",
@@ -338,6 +337,6 @@ def normalize_from_raw(
     db.add(norm_record)
     for row in channel_rows:
         db.add(row)
-    db.commit()
-    db.refresh(norm_record)
+    await db.commit()
+    await db.refresh(norm_record)
     return norm_record, channel_rows, str(path)

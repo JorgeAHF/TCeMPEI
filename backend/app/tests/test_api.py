@@ -6,13 +6,17 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool, StaticPool
 
-os.environ["DATABASE_URL"] = "sqlite:///./test_api.db"
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_api.db"
 os.environ["APP_ENV"] = "test"
 os.environ["ALLOW_SQLITE_FOR_TESTS"] = "true"
 os.environ["DATA_ROOT"] = "./test_data"
 
-from app.db import Base, SessionLocal, engine, get_db  # noqa: E402
+from app.db import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
     CableConfigSnapshot,
@@ -24,13 +28,25 @@ from app.models import (  # noqa: E402
 )
 from app.security import hash_password  # noqa: E402
 
+# Sync engine para setup/teardown del fixture (sin event loop)
+_sync_engine = create_engine(
+    "sqlite:///./test_api.db",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+_SyncSession = sessionmaker(bind=_sync_engine, autocommit=False, autoflush=False)
 
-def override_get_db():
-    db = SessionLocal()
-    try:
+# Async engine para el override de get_db (lo que usa la app en tests)
+_async_engine = create_async_engine(
+    "sqlite+aiosqlite:///./test_api.db",
+    poolclass=NullPool,
+)
+_AsyncTestSession = async_sessionmaker(_async_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def override_get_db():
+    async with _AsyncTestSession() as db:
         yield db
-    finally:
-        db.close()
 
 
 app.dependency_overrides[get_db] = override_get_db
@@ -39,9 +55,9 @@ app.dependency_overrides[get_db] = override_get_db
 @pytest.fixture(autouse=True)
 def clean_db():
     shutil.rmtree(Path(os.environ["DATA_ROOT"]), ignore_errors=True)
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    with SessionLocal() as db:
+    Base.metadata.drop_all(bind=_sync_engine)
+    Base.metadata.create_all(bind=_sync_engine)
+    with _SyncSession() as db:
         admin = User(
             username="admin",
             full_name="Admin",
@@ -51,7 +67,7 @@ def clean_db():
         db.add(admin)
         db.commit()
     yield
-    Base.metadata.drop_all(bind=engine)
+    Base.metadata.drop_all(bind=_sync_engine)
 
 
 client = TestClient(app)
@@ -117,7 +133,7 @@ def test_full_flow_semáforo_alerta():
 
     # 3) Cable state version, weighing, K (direct DB for now)
     kc_id = None
-    with SessionLocal() as db:
+    with _SyncSession() as db:
         state = CableStateVersion(
             cable_id=cable_id,
             valid_from=datetime(2024, 1, 1, tzinfo=timezone.utc),
@@ -285,6 +301,165 @@ def test_raw_upload_warns_duplicate_in_other_campaign():
     )
     assert second.status_code == 200
     assert "otra campaña" in (second.json()["warning"] or "").lower()
+
+
+def test_list_endpoints_support_filters_for_react_pages():
+    auth, user_id = _login_auth()
+    bridge_a = client.post("/bridges", json={"nombre": "Puente React A", "clave_interna": "PRA"}, headers=auth).json()["id"]
+    bridge_b = client.post("/bridges", json={"nombre": "Puente React B", "clave_interna": "PRB"}, headers=auth).json()["id"]
+
+    acq_old = client.post(
+        "/acquisitions",
+        json={
+            "bridge_id": bridge_a,
+            "acquired_at": "2024-01-01T00:00:00Z",
+            "operator_user_id": user_id,
+            "Fs_Hz": 64.0,
+            "notes": "old",
+        },
+        headers=auth,
+    )
+    assert acq_old.status_code == 200
+    acq_new = client.post(
+        "/acquisitions",
+        json={
+            "bridge_id": bridge_a,
+            "acquired_at": "2024-01-02T00:00:00Z",
+            "operator_user_id": user_id,
+            "Fs_Hz": 128.0,
+            "notes": "new",
+        },
+        headers=auth,
+    )
+    assert acq_new.status_code == 200
+    acq_other_bridge = client.post(
+        "/acquisitions",
+        json={
+            "bridge_id": bridge_b,
+            "acquired_at": "2024-01-03T00:00:00Z",
+            "operator_user_id": user_id,
+            "Fs_Hz": 256.0,
+            "notes": "other-bridge",
+        },
+        headers=auth,
+    )
+    assert acq_other_bridge.status_code == 200
+
+    all_acq = client.get("/acquisitions")
+    assert all_acq.status_code == 200
+    assert [item["id"] for item in all_acq.json()] == [
+        acq_other_bridge.json()["id"],
+        acq_new.json()["id"],
+        acq_old.json()["id"],
+    ]
+
+    filtered_acq = client.get("/acquisitions", params={"bridge_id": bridge_a})
+    assert filtered_acq.status_code == 200
+    assert [item["id"] for item in filtered_acq.json()] == [acq_new.json()["id"], acq_old.json()["id"]]
+
+    weighing_old = client.post(
+        "/weighing-campaigns",
+        json={
+            "bridge_id": bridge_a,
+            "performed_at": "2024-01-01T10:00:00Z",
+            "performed_by": "team-a",
+            "method": "jack",
+            "equipment": "eq-a",
+            "temperature_C": 20.0,
+            "notes": "",
+        },
+        headers=auth,
+    )
+    assert weighing_old.status_code == 200
+    weighing_new = client.post(
+        "/weighing-campaigns",
+        json={
+            "bridge_id": bridge_a,
+            "performed_at": "2024-01-02T10:00:00Z",
+            "performed_by": "team-a",
+            "method": "jack",
+            "equipment": "eq-b",
+            "temperature_C": 21.0,
+            "notes": "",
+        },
+        headers=auth,
+    )
+    assert weighing_new.status_code == 200
+    weighing_other = client.post(
+        "/weighing-campaigns",
+        json={
+            "bridge_id": bridge_b,
+            "performed_at": "2024-01-03T10:00:00Z",
+            "performed_by": "team-b",
+            "method": "jack",
+            "equipment": "eq-c",
+            "temperature_C": 22.0,
+            "notes": "",
+        },
+        headers=auth,
+    )
+    assert weighing_other.status_code == 200
+
+    all_weighing = client.get("/weighing-campaigns")
+    assert all_weighing.status_code == 200
+    assert [item["id"] for item in all_weighing.json()] == [
+        weighing_other.json()["id"],
+        weighing_new.json()["id"],
+        weighing_old.json()["id"],
+    ]
+
+    filtered_weighing = client.get("/weighing-campaigns", params={"bridge_id": bridge_a})
+    assert filtered_weighing.status_code == 200
+    assert [item["id"] for item in filtered_weighing.json()] == [
+        weighing_new.json()["id"],
+        weighing_old.json()["id"],
+    ]
+
+    run_old = client.post(
+        "/analysis-runs",
+        json={
+            "acquisition_id": acq_old.json()["id"],
+            "created_by_user_id": user_id,
+            "algorithm_version": "v1.0",
+            "notes": "old run",
+        },
+        headers=auth,
+    )
+    assert run_old.status_code == 200
+    run_new = client.post(
+        "/analysis-runs",
+        json={
+            "acquisition_id": acq_old.json()["id"],
+            "created_by_user_id": user_id,
+            "algorithm_version": "v1.1",
+            "notes": "new run",
+        },
+        headers=auth,
+    )
+    assert run_new.status_code == 200
+    run_other = client.post(
+        "/analysis-runs",
+        json={
+            "acquisition_id": acq_new.json()["id"],
+            "created_by_user_id": user_id,
+            "algorithm_version": "v2.0",
+            "notes": "other acquisition",
+        },
+        headers=auth,
+    )
+    assert run_other.status_code == 200
+
+    all_runs = client.get("/analysis-runs")
+    assert all_runs.status_code == 200
+    assert [item["id"] for item in all_runs.json()] == [
+        run_other.json()["id"],
+        run_new.json()["id"],
+        run_old.json()["id"],
+    ]
+
+    filtered_runs = client.get("/analysis-runs", params={"acquisition_id": acq_old.json()["id"]})
+    assert filtered_runs.status_code == 200
+    assert [item["id"] for item in filtered_runs.json()] == [run_new.json()["id"], run_old.json()["id"]]
 
 
 def test_normalize_supports_manual_header_override():

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks, welch
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Acquisition, Cable, RawFile
+from app.models import Acquisition, Cable, RawFile, AnalysisResult, AnalysisRun
 
 
 def _downsample(x: np.ndarray, y: np.ndarray, max_points: int = 2000) -> tuple[np.ndarray, np.ndarray]:
@@ -18,11 +20,11 @@ def _downsample(x: np.ndarray, y: np.ndarray, max_points: int = 2000) -> tuple[n
     return x[::step], y[::step]
 
 
-def _normalized_file_for_acquisition(db: Session, acquisition_id: int, normalized_file_id: int | None) -> RawFile | None:
-    q = db.query(RawFile).filter(RawFile.acquisition_id == acquisition_id, RawFile.file_kind == "normalized_csv")
+async def _normalized_file_for_acquisition(db: AsyncSession, acquisition_id: int, normalized_file_id: int | None) -> RawFile | None:
+    q = select(RawFile).where(RawFile.acquisition_id == acquisition_id, RawFile.file_kind == "normalized_csv")
     if normalized_file_id is not None:
-        return q.filter(RawFile.id == normalized_file_id).first()
-    return q.order_by(RawFile.version_no.desc(), RawFile.created_at.desc()).first()
+        return (await db.execute(q.where(RawFile.id == normalized_file_id))).scalar_one_or_none()
+    return (await db.execute(q.order_by(RawFile.version_no.desc(), RawFile.created_at.desc()))).scalars().first()
 
 
 def _resolve_channel_column(df: pd.DataFrame, cable_name: str, csv_column_name: str | None) -> str:
@@ -117,8 +119,8 @@ def _select_f0(
     return float(suggested), selected, candidate_peaks[:10]
 
 
-def build_analysis_preview(
-    db: Session,
+async def build_analysis_preview(
+    db: AsyncSession,
     run_id: int,
     acquisition: Acquisition,
     cable: Cable,
@@ -142,7 +144,7 @@ def build_analysis_preview(
     if fs_hz <= 0:
         raise ValueError("Fs_Hz inválida para la adquisición")
 
-    normalized_file = _normalized_file_for_acquisition(db, acquisition.id, normalized_file_id)
+    normalized_file = await _normalized_file_for_acquisition(db, acquisition.id, normalized_file_id)
     if not normalized_file:
         raise ValueError("No existe archivo normalized_csv para esta adquisición")
 
@@ -237,4 +239,101 @@ def build_analysis_preview(
             "freq_hz": [float(v) for v in f_psd_ds],
             "power": [float(v) for v in p_psd_ds],
         },
+    }
+
+
+async def detect_anomalies(
+    db: AsyncSession,
+    cable_id: int,
+    cable_name: str,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    z_threshold: float = 2.5,
+) -> dict[str, Any]:
+    """Detecta valores atípicos en el historial de análisis de un tirante usando z-score.
+
+    Para cada métrica (tension_tf, f0_hz) calcula el z-score respecto a la media y
+    desviación estándar del conjunto. Un resultado se marca como anomalía si cualquiera
+    de sus z-scores supera el umbral indicado.
+
+    Requiere al menos 3 resultados para calcular estadísticas significativas.
+    """
+    stmt = (
+        select(AnalysisResult, Acquisition)
+        .join(AnalysisRun, AnalysisResult.analysis_run_id == AnalysisRun.id)
+        .join(Acquisition, AnalysisRun.acquisition_id == Acquisition.id)
+        .where(AnalysisResult.cable_id == cable_id)
+    )
+    if date_from:
+        stmt = stmt.where(Acquisition.acquired_at >= date_from)
+    if date_to:
+        stmt = stmt.where(Acquisition.acquired_at <= date_to)
+    stmt = stmt.order_by(Acquisition.acquired_at)
+
+    rows = (await db.execute(stmt)).all()
+
+    items: list[dict[str, Any]] = []
+    if not rows:
+        return {
+            "cable_id": cable_id,
+            "n_results": 0,
+            "n_anomalies": 0,
+            "z_threshold": z_threshold,
+            "items": [],
+        }
+
+    tensions = np.array([float(r.tension_tf) for r, _ in rows])
+    f0s = np.array([float(r.f0_hz) for r, _ in rows])
+    n = len(tensions)
+
+    # Z-score requires at least 3 points to be meaningful
+    if n >= 3:
+        t_mean, t_std = float(np.mean(tensions)), float(np.std(tensions, ddof=1))
+        f_mean, f_std = float(np.mean(f0s)), float(np.std(f0s, ddof=1))
+    else:
+        t_mean = t_std = f_mean = f_std = 0.0
+
+    n_anomalies = 0
+    for (res, acq) in rows:
+        if n >= 3 and t_std > 0:
+            z_t = abs((float(res.tension_tf) - t_mean) / t_std)
+        else:
+            z_t = 0.0
+
+        if n >= 3 and f_std > 0:
+            z_f = abs((float(res.f0_hz) - f_mean) / f_std)
+        else:
+            z_f = 0.0
+
+        reasons: list[str] = []
+        if z_t > z_threshold:
+            reasons.append(f"tensión z={z_t:.2f}")
+        if z_f > z_threshold:
+            reasons.append(f"f0 z={z_f:.2f}")
+
+        is_anomaly = bool(reasons)
+        if is_anomaly:
+            n_anomalies += 1
+
+        items.append({
+            "analysis_result_id": res.id,
+            "cable_id": res.cable_id,
+            "nombre_en_puente": cable_name,
+            "acquired_at": acq.acquired_at,
+            "f0_hz": float(res.f0_hz),
+            "tension_tf": float(res.tension_tf),
+            "quality_flag": res.quality_flag,
+            "is_approved": bool(res.is_approved),
+            "zscore_tension": round(z_t, 4),
+            "zscore_f0": round(z_f, 4),
+            "is_anomaly": is_anomaly,
+            "anomaly_reason": "; ".join(reasons) if reasons else None,
+        })
+
+    return {
+        "cable_id": cable_id,
+        "n_results": n,
+        "n_anomalies": n_anomalies,
+        "z_threshold": z_threshold,
+        "items": items,
     }

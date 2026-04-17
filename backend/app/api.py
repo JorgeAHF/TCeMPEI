@@ -6,11 +6,12 @@ from typing import List
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Body, Query, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import schemas
 from .config import get_settings
-from .db import Base, engine, get_db
+from .db import get_db
 from .models import (
     Acquisition,
     AcquisitionChannel,
@@ -47,11 +48,10 @@ from .services.ingestion import (
     normalize_from_raw,
     register_raw_file,
 )
-from .services.signal_analysis import build_analysis_preview
+from .services.signal_analysis import build_analysis_preview, detect_anomalies
 from .utils import save_upload
 
 router = APIRouter()
-Base.metadata.create_all(bind=engine)
 settings = get_settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 ALLOWED_ROLES = {"admin", "analyst", "reviewer", "viewer"}
@@ -62,7 +62,7 @@ def ensure_admin(user: User):
         raise HTTPException(status_code=403, detail="Admin role required")
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -75,7 +75,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             raise credentials_exception
     except Exception:
         raise credentials_exception
-    user = db.get(User, user_id)
+    user = await db.get(User, user_id)
     if not user:
         raise credentials_exception
     return user
@@ -90,44 +90,44 @@ def require_roles(*roles):
     return checker
 
 
-def log_action(db: Session, entity: str, entity_id: int, action: str, user_id: int, notes: str | None = None):
+async def log_action(db: AsyncSession, entity: str, entity_id: int, action: str, user_id: int, notes: str | None = None):
     log = AuditLog(entity=entity, entity_id=entity_id, action=action, performed_by=user_id, notes=notes)
     db.add(log)
-    db.commit()
+    await db.commit()
 
 
-def get_user(db: Session, username: str) -> User | None:
-    return db.query(User).filter(User.username == username).first()
+async def get_user(db: AsyncSession, username: str) -> User | None:
+    return (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
 
 
-def _persist_refresh_token(db: Session, user_id: int, jti: str, expires_at: datetime) -> RefreshToken:
+async def _persist_refresh_token(db: AsyncSession, user_id: int, jti: str, expires_at: datetime) -> RefreshToken:
     token_row = RefreshToken(user_id=user_id, token_jti=jti, expires_at=expires_at)
     db.add(token_row)
-    db.commit()
-    db.refresh(token_row)
+    await db.commit()
+    await db.refresh(token_row)
     return token_row
 
 
-def _revoke_refresh_token(db: Session, jti: str, reason: str) -> None:
-    row = db.query(RefreshToken).filter(RefreshToken.token_jti == jti).first()
+async def _revoke_refresh_token(db: AsyncSession, jti: str, reason: str) -> None:
+    row = (await db.execute(select(RefreshToken).where(RefreshToken.token_jti == jti))).scalar_one_or_none()
     if row and row.revoked_at is None:
         row.revoked_at = datetime.utcnow()
         row.revoked_reason = reason
         db.add(row)
-        db.commit()
+        await db.commit()
 
 
 @router.post("/auth/login", response_model=schemas.AuthLoginResponse)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = get_user(db, form_data.username)
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
+    user = await get_user(db, form_data.username)
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
     if user.role not in ALLOWED_ROLES:
         raise HTTPException(status_code=403, detail="User role is not allowed")
     access_token = create_access_token({"sub": str(user.id)})
     refresh_token, jti, refresh_exp = create_refresh_token({"sub": str(user.id)})
-    _persist_refresh_token(db, user.id, jti, refresh_exp)
-    log_action(db, "auth", user.id, "login", user.id)
+    await _persist_refresh_token(db, user.id, jti, refresh_exp)
+    await log_action(db, "auth", user.id, "login", user.id)
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -139,13 +139,13 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
 
 @router.post("/auth/token")
-def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    # Backward-compatible endpoint expected by OAuth2PasswordBearer and current Dash login.
-    return login(form_data, db)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
+    # Backward-compatible endpoint expected by OAuth2PasswordBearer and the web client login flow.
+    return await login(form_data, db)
 
 
 @router.post("/auth/refresh", response_model=schemas.AuthRefreshResponse)
-def refresh_access_token(payload: schemas.AuthRefreshRequest, db: Session = Depends(get_db)):
+async def refresh_access_token(payload: schemas.AuthRefreshRequest, db: AsyncSession = Depends(get_db)):
     try:
         token_payload = decode_token(payload.refresh_token, expected_type="refresh")
         user_id = int(token_payload.get("sub"))
@@ -156,23 +156,23 @@ def refresh_access_token(payload: schemas.AuthRefreshRequest, db: Session = Depe
     if not jti:
         raise HTTPException(status_code=401, detail="Malformed refresh token")
 
-    token_row = db.query(RefreshToken).filter(RefreshToken.token_jti == jti).first()
+    token_row = (await db.execute(select(RefreshToken).where(RefreshToken.token_jti == jti))).scalar_one_or_none()
     if not token_row or token_row.revoked_at is not None:
         raise HTTPException(status_code=401, detail="Refresh token revoked")
     if token_row.expires_at <= datetime.utcnow():
-        _revoke_refresh_token(db, jti, "expired")
+        await _revoke_refresh_token(db, jti, "expired")
         raise HTTPException(status_code=401, detail="Refresh token expired")
 
-    user = db.get(User, user_id)
+    user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
     # Rotation: revoke old token and issue a new pair.
-    _revoke_refresh_token(db, jti, "rotated")
+    await _revoke_refresh_token(db, jti, "rotated")
     access_token = create_access_token({"sub": str(user.id)})
     new_refresh_token, new_jti, refresh_exp = create_refresh_token({"sub": str(user.id)})
-    _persist_refresh_token(db, user.id, new_jti, refresh_exp)
-    log_action(db, "auth", user.id, "refresh", user.id)
+    await _persist_refresh_token(db, user.id, new_jti, refresh_exp)
+    await log_action(db, "auth", user.id, "refresh", user.id)
     return {
         "access_token": access_token,
         "refresh_token": new_refresh_token,
@@ -183,7 +183,7 @@ def refresh_access_token(payload: schemas.AuthRefreshRequest, db: Session = Depe
 
 
 @router.post("/auth/logout")
-def logout(payload: schemas.AuthLogoutRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def logout(payload: schemas.AuthLogoutRequest, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     try:
         token_payload = decode_token(payload.refresh_token, expected_type="refresh")
         jti = token_payload.get("jti")
@@ -191,14 +191,14 @@ def logout(payload: schemas.AuthLogoutRequest, user: User = Depends(get_current_
         raise HTTPException(status_code=401, detail="Invalid refresh token")
     if not jti:
         raise HTTPException(status_code=401, detail="Malformed refresh token")
-    _revoke_refresh_token(db, jti, "logout")
-    log_action(db, "auth", user.id, "logout", user.id)
+    await _revoke_refresh_token(db, jti, "logout")
+    await log_action(db, "auth", user.id, "logout", user.id)
     return {"status": "ok"}
 
 
 @router.post("/users", response_model=schemas.UserOut)
-def create_user(payload: schemas.UserCreate, db: Session = Depends(get_db), current_user: User = Depends(require_roles("admin"))):
-    if get_user(db, payload.username):
+async def create_user(payload: schemas.UserCreate, db: AsyncSession = Depends(get_db), current_user: User = Depends(require_roles("admin"))):
+    if await get_user(db, payload.username):
         raise HTTPException(status_code=400, detail="Username already exists")
     user = User(
         username=payload.username,
@@ -207,14 +207,14 @@ def create_user(payload: schemas.UserCreate, db: Session = Depends(get_db), curr
         password_hash=hash_password(payload.password),
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
-    log_action(db, "user", user.id, "create", current_user.id)
+    await db.commit()
+    await db.refresh(user)
+    await log_action(db, "user", user.id, "create", current_user.id)
     return user
 
 
 @router.post("/bridges", response_model=schemas.BridgeOut)
-def create_bridge(payload: schemas.BridgeCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
+async def create_bridge(payload: schemas.BridgeCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
     bridge = Bridge(
         nombre=payload.nombre,
         clave_interna=payload.clave_interna,
@@ -223,9 +223,9 @@ def create_bridge(payload: schemas.BridgeCreate, db: Session = Depends(get_db), 
         created_by_user_id=user.id,
     )
     db.add(bridge)
-    db.commit()
-    db.refresh(bridge)
-    log_action(db, "bridge", bridge.id, "create", user.id)
+    await db.commit()
+    await db.refresh(bridge)
+    await log_action(db, "bridge", bridge.id, "create", user.id)
 
     # Crear tirantes placeholder si se solicitó
     if payload.num_tirantes and payload.num_tirantes > 0:
@@ -234,28 +234,28 @@ def create_bridge(payload: schemas.BridgeCreate, db: Session = Depends(get_db), 
             name = f"T-{idx:0{width}d}"
             cable = Cable(bridge_id=bridge.id, nombre_en_puente=name, created_by_user_id=user.id)
             db.add(cable)
-            db.flush()
-            log_action(db, "cable", cable.id, "create_placeholder", user.id, notes="auto-generated")
-        db.commit()
+            await db.flush()
+            await log_action(db, "cable", cable.id, "create_placeholder", user.id, notes="auto-generated")
+        await db.commit()
     return bridge
 
 
 @router.get("/bridges", response_model=List[schemas.BridgeOut])
-def list_bridges(db: Session = Depends(get_db)):
-    return db.query(Bridge).order_by(Bridge.nombre).all()
+async def list_bridges(db: AsyncSession = Depends(get_db)):
+    return (await db.execute(select(Bridge).order_by(Bridge.nombre))).scalars().all()
 
 
 @router.put("/bridges/{bridge_id}", response_model=schemas.BridgeOut)
-def update_bridge(
+async def update_bridge(
     bridge_id: int,
     payload: schemas.BridgeUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
-    bridge = db.get(Bridge, bridge_id)
+    bridge = await db.get(Bridge, bridge_id)
     if not bridge:
         raise HTTPException(status_code=404, detail="Bridge not found")
-    current_cables = db.query(Cable).filter(Cable.bridge_id == bridge_id).order_by(Cable.id).all()
+    current_cables = (await db.execute(select(Cable).where(Cable.bridge_id == bridge_id).order_by(Cable.id))).scalars().all()
     if payload.nombre is not None:
         bridge.nombre = payload.nombre
     if payload.clave_interna is not None:
@@ -279,104 +279,106 @@ def update_bridge(
                 name = f"T-{idx:0{width}d}"
                 cable = Cable(bridge_id=bridge.id, nombre_en_puente=name, created_by_user_id=user.id)
                 db.add(cable)
-                db.flush()
-                log_action(db, "cable", cable.id, "create_placeholder", user.id, notes="auto-generated by update")
+                await db.flush()
+                await log_action(db, "cable", cable.id, "create_placeholder", user.id, notes="auto-generated by update")
 
     db.add(bridge)
-    db.commit()
-    db.refresh(bridge)
-    log_action(db, "bridge", bridge.id, "update", user.id)
+    await db.commit()
+    await db.refresh(bridge)
+    await log_action(db, "bridge", bridge.id, "update", user.id)
     return bridge
 
 
 @router.delete("/bridges/{bridge_id}")
-def delete_bridge(
+async def delete_bridge(
     bridge_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin")),
 ):
-    bridge = db.get(Bridge, bridge_id)
+    bridge = await db.get(Bridge, bridge_id)
     if not bridge:
         raise HTTPException(status_code=404, detail="Bridge not found")
-    cables = db.query(Cable).filter(Cable.bridge_id == bridge_id).all()
+    cables = (await db.execute(select(Cable).where(Cable.bridge_id == bridge_id))).scalars().all()
     if cables:
         raise HTTPException(status_code=400, detail="Elimina tirantes del puente antes de borrarlo.")
-    db.delete(bridge)
-    db.commit()
-    log_action(db, "bridge", bridge_id, "delete", user.id)
+    await db.delete(bridge)
+    await db.commit()
+    await log_action(db, "bridge", bridge_id, "delete", user.id)
     return {"status": "deleted", "id": bridge_id}
 
 
 @router.delete("/strand-types/{strand_type_id}")
-def delete_strand_type(
+async def delete_strand_type(
     strand_type_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin")),
 ):
-    st = db.get(StrandType, strand_type_id)
+    st = await db.get(StrandType, strand_type_id)
     if not st:
         raise HTTPException(status_code=404, detail="Strand type not found")
-    db.delete(st)
-    db.commit()
-    log_action(db, "strand_type", strand_type_id, "delete", user.id)
+    await db.delete(st)
+    await db.commit()
+    await log_action(db, "strand_type", strand_type_id, "delete", user.id)
     return {"status": "deleted", "id": strand_type_id}
 
+
 @router.post("/strand-types", response_model=schemas.StrandTypeOut)
-def create_strand_type(payload: schemas.StrandTypeCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
+async def create_strand_type(payload: schemas.StrandTypeCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
     st = StrandType(**payload.dict(), created_by_user_id=user.id)
     db.add(st)
-    db.commit()
-    db.refresh(st)
-    log_action(db, "strand_type", st.id, "create", user.id)
+    await db.commit()
+    await db.refresh(st)
+    await log_action(db, "strand_type", st.id, "create", user.id)
     return st
 
 
 @router.get("/strand-types", response_model=List[schemas.StrandTypeOut])
-def list_strand_types(db: Session = Depends(get_db)):
-    return db.query(StrandType).order_by(StrandType.nombre).all()
+async def list_strand_types(db: AsyncSession = Depends(get_db)):
+    return (await db.execute(select(StrandType).order_by(StrandType.nombre))).scalars().all()
+
 
 @router.put("/strand-types/{strand_type_id}", response_model=schemas.StrandTypeOut)
-def update_strand_type(
+async def update_strand_type(
     strand_type_id: int,
     payload: schemas.StrandTypeUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
-    st = db.get(StrandType, strand_type_id)
+    st = await db.get(StrandType, strand_type_id)
     if not st:
         raise HTTPException(status_code=404, detail="Strand type not found")
     for field, value in payload.dict(exclude_unset=True).items():
         setattr(st, field, value)
     db.add(st)
-    db.commit()
-    db.refresh(st)
-    log_action(db, "strand_type", st.id, "update", user.id)
+    await db.commit()
+    await db.refresh(st)
+    await log_action(db, "strand_type", st.id, "update", user.id)
     return st
 
 
 @router.post("/cables", response_model=schemas.CableOut)
-def create_cable(payload: schemas.CableCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
+async def create_cable(payload: schemas.CableCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
     cable = Cable(**payload.dict(), created_by_user_id=user.id)
     db.add(cable)
-    db.commit()
-    db.refresh(cable)
-    log_action(db, "cable", cable.id, "create", user.id)
+    await db.commit()
+    await db.refresh(cable)
+    await log_action(db, "cable", cable.id, "create", user.id)
     return cable
 
 
 @router.get("/cables", response_model=List[schemas.CableOut])
-def list_cables(db: Session = Depends(get_db)):
-    return db.query(Cable).order_by(Cable.bridge_id, Cable.nombre_en_puente).all()
+async def list_cables(db: AsyncSession = Depends(get_db)):
+    return (await db.execute(select(Cable).order_by(Cable.bridge_id, Cable.nombre_en_puente))).scalars().all()
 
 
 @router.put("/cables/{cable_id}", response_model=schemas.CableOut)
-def update_cable(
+async def update_cable(
     cable_id: int,
     payload: schemas.CableUpdate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
-    cable = db.get(Cable, cable_id)
+    cable = await db.get(Cable, cable_id)
     if not cable:
         raise HTTPException(status_code=404, detail="Cable not found")
     if payload.nombre_en_puente:
@@ -384,25 +386,25 @@ def update_cable(
     if payload.notas is not None:
         cable.notas = payload.notas
     db.add(cable)
-    db.commit()
-    db.refresh(cable)
-    log_action(db, "cable", cable.id, "update", user.id)
+    await db.commit()
+    await db.refresh(cable)
+    await log_action(db, "cable", cable.id, "update", user.id)
     return cable
 
 
 @router.delete("/cables/{cable_id}")
-def delete_cable(cable_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
-    cable = db.get(Cable, cable_id)
+async def delete_cable(cable_id: int, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
+    cable = await db.get(Cable, cable_id)
     if not cable:
         raise HTTPException(status_code=404, detail="Cable not found")
-    db.delete(cable)
-    db.commit()
-    log_action(db, "cable", cable_id, "delete", user.id)
+    await db.delete(cable)
+    await db.commit()
+    await log_action(db, "cable", cable_id, "delete", user.id)
     return {"status": "deleted", "id": cable_id}
 
 
 @router.post("/cable-states", response_model=schemas.CableStateVersionOut)
-def create_cable_state(payload: schemas.CableStateVersionCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
+async def create_cable_state(payload: schemas.CableStateVersionCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
     if payload.valid_to and payload.valid_to <= payload.valid_from:
         raise HTTPException(status_code=400, detail="valid_to must be greater than valid_from")
     if payload.strands_active > payload.strands_total:
@@ -411,125 +413,160 @@ def create_cable_state(payload: schemas.CableStateVersionCreate, db: Session = D
         raise HTTPException(status_code=400, detail="antivandalic_length_m required when antivandalic_enabled")
 
     open_state = (
-        db.query(CableStateVersion)
-        .filter(CableStateVersion.cable_id == payload.cable_id, CableStateVersion.valid_to.is_(None))
-        .first()
-    )
+        await db.execute(
+            select(CableStateVersion).where(
+                CableStateVersion.cable_id == payload.cable_id,
+                CableStateVersion.valid_to.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
     if open_state and payload.valid_to is None:
         raise HTTPException(status_code=400, detail="Cable already has an open state version")
 
     state = CableStateVersion(**payload.dict(), created_by_user_id=user.id)
     db.add(state)
-    db.commit()
-    db.refresh(state)
-    log_action(db, "cable_state_version", state.id, "create", user.id)
+    await db.commit()
+    await db.refresh(state)
+    await log_action(db, "cable_state_version", state.id, "create", user.id)
     return state
 
 
 @router.get("/cables/{cable_id}/states", response_model=List[schemas.CableStateVersionOut])
-def list_cable_states(cable_id: int, db: Session = Depends(get_db)):
+async def list_cable_states(cable_id: int, db: AsyncSession = Depends(get_db)):
     return (
-        db.query(CableStateVersion)
-        .filter(CableStateVersion.cable_id == cable_id)
-        .order_by(CableStateVersion.valid_from.desc())
-        .all()
-    )
+        await db.execute(
+            select(CableStateVersion)
+            .where(CableStateVersion.cable_id == cable_id)
+            .order_by(CableStateVersion.valid_from.desc())
+        )
+    ).scalars().all()
 
 
 @router.post("/sensors", response_model=schemas.SensorOut)
-def create_sensor(payload: schemas.SensorCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
+async def create_sensor(payload: schemas.SensorCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
     sensor = Sensor(**payload.dict(), created_by_user_id=user.id)
     db.add(sensor)
-    db.commit()
-    db.refresh(sensor)
-    log_action(db, "sensor", sensor.id, "create", user.id)
+    await db.commit()
+    await db.refresh(sensor)
+    await log_action(db, "sensor", sensor.id, "create", user.id)
     return sensor
 
 
 @router.get("/sensors", response_model=List[schemas.SensorOut])
-def list_sensors(db: Session = Depends(get_db)):
-    return db.query(Sensor).order_by(Sensor.serial_or_asset_id).all()
+async def list_sensors(db: AsyncSession = Depends(get_db)):
+    return (await db.execute(select(Sensor).order_by(Sensor.serial_or_asset_id))).scalars().all()
 
 
 @router.post("/sensor-installations", response_model=schemas.SensorInstallationOut)
-def create_sensor_installation(payload: schemas.SensorInstallationCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
+async def create_sensor_installation(payload: schemas.SensorInstallationCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
     if payload.installed_to and payload.installed_to <= payload.installed_from:
         raise HTTPException(status_code=400, detail="installed_to must be greater than installed_from")
     if payload.height_m <= 0:
         raise HTTPException(status_code=400, detail="height_m must be > 0")
 
-    existing = db.query(SensorInstallation).filter(SensorInstallation.sensor_id == payload.sensor_id).all()
+    existing = (
+        await db.execute(select(SensorInstallation).where(SensorInstallation.sensor_id == payload.sensor_id))
+    ).scalars().all()
     validate_installations_no_overlap(existing + [SensorInstallation(**payload.dict())])
 
     inst = SensorInstallation(**payload.dict(), created_by_user_id=user.id)
     db.add(inst)
-    db.commit()
-    db.refresh(inst)
-    log_action(db, "sensor_installation", inst.id, "create", user.id)
+    await db.commit()
+    await db.refresh(inst)
+    await log_action(db, "sensor_installation", inst.id, "create", user.id)
     return inst
 
 
 @router.get("/sensor-installations", response_model=List[schemas.SensorInstallationOut])
-def list_sensor_installations(db: Session = Depends(get_db)):
+async def list_sensor_installations(db: AsyncSession = Depends(get_db)):
     return (
-        db.query(SensorInstallation)
-        .order_by(SensorInstallation.sensor_id, SensorInstallation.installed_from.desc())
-        .all()
-    )
+        await db.execute(
+            select(SensorInstallation).order_by(
+                SensorInstallation.sensor_id, SensorInstallation.installed_from.desc()
+            )
+        )
+    ).scalars().all()
 
 
 @router.post("/acquisitions", response_model=schemas.AcquisitionOut)
-def create_acquisition(payload: schemas.AcquisitionCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
+async def create_acquisition(payload: schemas.AcquisitionCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
     acq = Acquisition(**payload.dict(), created_by_user_id=user.id)
     db.add(acq)
-    db.commit()
-    db.refresh(acq)
-    log_action(db, "acquisition", acq.id, "create", user.id)
+    await db.commit()
+    await db.refresh(acq)
+    await log_action(db, "acquisition", acq.id, "create", user.id)
     return acq
 
 
+@router.get("/acquisitions", response_model=List[schemas.AcquisitionOut])
+async def list_acquisitions(bridge_id: int | None = None, db: AsyncSession = Depends(get_db)):
+    stmt = select(Acquisition)
+    if bridge_id:
+        stmt = stmt.where(Acquisition.bridge_id == bridge_id)
+    stmt = stmt.order_by(Acquisition.acquired_at.desc(), Acquisition.id.desc())
+    return (await db.execute(stmt)).scalars().all()
+
+
 @router.post("/weighing-campaigns", response_model=schemas.WeighingCampaignOut)
-def create_weighing_campaign(payload: schemas.WeighingCampaignCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
+async def create_weighing_campaign(payload: schemas.WeighingCampaignCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst"))):
     wc = WeighingCampaign(**payload.dict(), created_by_user_id=user.id)
     db.add(wc)
-    db.commit()
-    db.refresh(wc)
-    log_action(db, "weighing_campaign", wc.id, "create", user.id)
+    await db.commit()
+    await db.refresh(wc)
+    await log_action(db, "weighing_campaign", wc.id, "create", user.id)
     return wc
 
 
+@router.get("/weighing-campaigns", response_model=List[schemas.WeighingCampaignOut])
+async def list_weighing_campaigns(bridge_id: int | None = None, db: AsyncSession = Depends(get_db)):
+    stmt = select(WeighingCampaign)
+    if bridge_id:
+        stmt = stmt.where(WeighingCampaign.bridge_id == bridge_id)
+    stmt = stmt.order_by(WeighingCampaign.performed_at.desc(), WeighingCampaign.id.desc())
+    return (await db.execute(stmt)).scalars().all()
+
+
 @router.post("/analysis-runs", response_model=schemas.AnalysisRunOut)
-def create_analysis_run(payload: schemas.AnalysisRunCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst", "reviewer"))):
+async def create_analysis_run(payload: schemas.AnalysisRunCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst", "reviewer"))):
     run_payload = payload.dict(exclude={"created_by_user_id"})
     run = AnalysisRun(**run_payload, created_by_user_id=user.id)
     db.add(run)
-    db.commit()
-    db.refresh(run)
-    log_action(db, "analysis_run", run.id, "create", user.id)
+    await db.commit()
+    await db.refresh(run)
+    await log_action(db, "analysis_run", run.id, "create", user.id)
     return run
 
 
+@router.get("/analysis-runs", response_model=List[schemas.AnalysisRunOut])
+async def list_analysis_runs(acquisition_id: int | None = None, db: AsyncSession = Depends(get_db)):
+    stmt = select(AnalysisRun)
+    if acquisition_id:
+        stmt = stmt.where(AnalysisRun.acquisition_id == acquisition_id)
+    stmt = stmt.order_by(AnalysisRun.created_at.desc(), AnalysisRun.id.desc())
+    return (await db.execute(stmt)).scalars().all()
+
+
 @router.post("/analysis-runs/{run_id}/preview", response_model=schemas.AnalysisPreviewResponse)
-def preview_analysis_run(
+async def preview_analysis_run(
     run_id: int,
     payload: schemas.AnalysisPreviewRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst", "reviewer", "viewer")),
 ):
-    run = db.get(AnalysisRun, run_id)
+    run = await db.get(AnalysisRun, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="AnalysisRun not found")
-    acq = db.get(Acquisition, run.acquisition_id)
+    acq = await db.get(Acquisition, run.acquisition_id)
     if not acq:
         raise HTTPException(status_code=404, detail="Acquisition not found for run")
-    cable = db.get(Cable, payload.cable_id)
+    cable = await db.get(Cable, payload.cable_id)
     if not cable:
         raise HTTPException(status_code=404, detail="Cable not found")
     if cable.bridge_id != acq.bridge_id:
         raise HTTPException(status_code=400, detail="Cable does not belong to acquisition bridge")
 
     try:
-        result = build_analysis_preview(
+        result = await build_analysis_preview(
             db=db,
             run_id=run_id,
             acquisition=acq,
@@ -549,19 +586,21 @@ def preview_analysis_run(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    log_action(db, "analysis_run", run.id, "preview", user.id, notes=f"cable_id={payload.cable_id}")
+    await log_action(db, "analysis_run", run.id, "preview", user.id, notes=f"cable_id={payload.cable_id}")
     return result
 
 
 @router.post("/analysis-results", response_model=schemas.AnalysisResultOut)
-def create_analysis_result(payload: schemas.AnalysisResultCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "analyst", "reviewer"))):
-    run = db.get(AnalysisRun, payload.analysis_run_id)
+async def create_analysis_result(payload: schemas.AnalysisResultCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_roles("admin", "analyst", "reviewer"))):
+    run = await db.get(AnalysisRun, payload.analysis_run_id)
     if not run:
         raise HTTPException(status_code=404, detail="AnalysisRun not found")
-    acq = db.get(Acquisition, run.acquisition_id)
+    acq = await db.get(Acquisition, run.acquisition_id)
     if not acq:
         raise HTTPException(status_code=404, detail="Acquisition not found for run")
-    calibrations = db.query(KCalibration).filter(KCalibration.cable_id == payload.cable_id).all()
+    calibrations = (
+        await db.execute(select(KCalibration).where(KCalibration.cable_id == payload.cable_id))
+    ).scalars().all()
     try:
         selected_k = select_k_for_timestamp(calibrations, acq.acquired_at)
     except ValueError:
@@ -581,51 +620,120 @@ def create_analysis_result(payload: schemas.AnalysisResultCreate, db: Session = 
         quality_flag=payload.quality_flag,
     )
     db.add(res)
-    db.commit()
-    db.refresh(res)
-    log_action(db, "analysis_result", res.id, "create", user.id)
+    await db.commit()
+    await db.refresh(res)
+    await log_action(db, "analysis_result", res.id, "create", user.id)
     return res
 
 
 @router.get("/analysis-runs/{run_id}/results", response_model=List[schemas.AnalysisResultOut])
-def list_analysis_results(run_id: int, db: Session = Depends(get_db)):
+async def list_analysis_results(run_id: int, db: AsyncSession = Depends(get_db)):
     return (
-        db.query(AnalysisResult)
-        .filter(AnalysisResult.analysis_run_id == run_id)
-        .order_by(AnalysisResult.created_at.desc())
-        .all()
+        await db.execute(
+            select(AnalysisResult)
+            .where(AnalysisResult.analysis_run_id == run_id)
+            .order_by(AnalysisResult.created_at.desc())
+        )
+    ).scalars().all()
+
+
+@router.patch("/analysis-results/{result_id}/approve", response_model=schemas.AnalysisResultApproveResponse)
+async def approve_analysis_result(
+    result_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst", "reviewer")),
+):
+    """Marca un analysis_result como aprobado/vigente para su tirante dentro del mismo run.
+    Desaprueba automáticamente cualquier resultado anterior aprobado del mismo cable en el mismo run.
+    """
+    result = await db.get(AnalysisResult, result_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="AnalysisResult not found")
+
+    # Desaprobar otros resultados del mismo cable en el mismo run
+    siblings = (
+        await db.execute(
+            select(AnalysisResult).where(
+                AnalysisResult.analysis_run_id == result.analysis_run_id,
+                AnalysisResult.cable_id == result.cable_id,
+                AnalysisResult.id != result_id,
+                AnalysisResult.is_approved.is_(True),
+            )
+        )
+    ).scalars().all()
+
+    unapproved_ids: list[int] = []
+    for sibling in siblings:
+        sibling.is_approved = False
+        sibling.approved_by_user_id = None
+        sibling.approved_at = None
+        db.add(sibling)
+        unapproved_ids.append(sibling.id)
+
+    result.is_approved = True
+    result.approved_by_user_id = user.id
+    result.approved_at = datetime.utcnow()
+    db.add(result)
+    await db.commit()
+    await db.refresh(result)
+    await log_action(
+        db, "analysis_result", result.id, "approve", user.id,
+        notes=f"unapproved={unapproved_ids}" if unapproved_ids else None,
+    )
+    return schemas.AnalysisResultApproveResponse(
+        id=result.id,
+        is_approved=result.is_approved,
+        approved_by_user_id=result.approved_by_user_id,
+        approved_at=result.approved_at,
+        previously_unapproved_ids=unapproved_ids,
     )
 
 
+@router.patch("/analysis-results/{result_id}/unapprove", response_model=schemas.AnalysisResultOut)
+async def unapprove_analysis_result(
+    result_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst", "reviewer")),
+):
+    """Revoca la aprobación de un analysis_result."""
+    result = await db.get(AnalysisResult, result_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="AnalysisResult not found")
+    result.is_approved = False
+    result.approved_by_user_id = None
+    result.approved_at = None
+    db.add(result)
+    await db.commit()
+    await db.refresh(result)
+    await log_action(db, "analysis_result", result.id, "unapprove", user.id)
+    return result
+
+
 @router.get("/history", response_model=schemas.HistoryResponse)
-def history(
+async def history(
     bridge_id: int | None = None,
     cable_id: int | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
-    q = (
-        db.query(
-            AnalysisResult,
-            AnalysisRun,
-            Acquisition,
-            Cable,
-        )
+    stmt = (
+        select(AnalysisResult, AnalysisRun, Acquisition, Cable)
         .join(AnalysisRun, AnalysisResult.analysis_run_id == AnalysisRun.id)
         .join(Acquisition, AnalysisRun.acquisition_id == Acquisition.id)
         .join(Cable, Cable.id == AnalysisResult.cable_id)
     )
     if bridge_id:
-        q = q.filter(Cable.bridge_id == bridge_id)
+        stmt = stmt.where(Cable.bridge_id == bridge_id)
     if cable_id:
-        q = q.filter(Cable.id == cable_id)
+        stmt = stmt.where(Cable.id == cable_id)
     if date_from:
-        q = q.filter(Acquisition.acquired_at >= date_from)
+        stmt = stmt.where(Acquisition.acquired_at >= date_from)
     if date_to:
-        q = q.filter(Acquisition.acquired_at <= date_to)
+        stmt = stmt.where(Acquisition.acquired_at <= date_to)
+    stmt = stmt.order_by(Acquisition.acquired_at)
 
-    rows = q.order_by(Acquisition.acquired_at).all()
+    rows = (await db.execute(stmt)).all()
     items = [
         schemas.HistoryItem(
             cable_id=cable.id,
@@ -643,38 +751,38 @@ def history(
 
     k_list = None
     if cable_id:
-        k_list = list_k_calibrations(cable_id=cable_id, db=db)
+        k_list = await list_k_calibrations(cable_id=cable_id, db=db)
     return schemas.HistoryResponse(results=items, k_calibrations=k_list)
 
 
 @router.post("/acquisitions/{acq_id}/file")
-def upload_acquisition_file(
+async def upload_acquisition_file(
     acq_id: int,
     file_kind: str,
     parser_version: str,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
-    acq = db.get(Acquisition, acq_id)
+    acq = await db.get(Acquisition, acq_id)
     if not acq:
         raise HTTPException(status_code=404, detail="Acquisition not found")
 
-    data = file.file.read()
+    data = await file.read()
     if file_kind not in {"raw_csv", "normalized_csv"}:
         raise HTTPException(status_code=400, detail="file_kind must be raw_csv or normalized_csv")
 
     warning = None
     if file_kind == "raw_csv":
         try:
-            record, warning = register_raw_file(db, acq, parser_version, file.filename, Path(settings.data_root), data)
+            record, warning = await register_raw_file(db, acq, parser_version, file.filename, Path(settings.data_root), data)
         except DuplicateRawFileInAcquisitionError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=f"{exc}. raw_file_id existente={exc.existing_file_id}",
             )
     else:
-        version_no = get_next_file_version(db, acq_id, "normalized_csv")
+        version_no = await get_next_file_version(db, acq_id, "normalized_csv")
         versioned_name = f"acq{acq_id}_normalized_v{version_no:04d}_{Path(file.filename).name.replace(' ', '_')}"
         path, digest = save_upload(Path(settings.data_root), "normalized", versioned_name, data)
         record = RawFile(
@@ -689,9 +797,9 @@ def upload_acquisition_file(
             parser_version=parser_version,
         )
         db.add(record)
-        db.commit()
-        db.refresh(record)
-    log_action(db, "raw_file", record.id, "create", user.id, notes=file_kind)
+        await db.commit()
+        await db.refresh(record)
+    await log_action(db, "raw_file", record.id, "create", user.id, notes=file_kind)
     return {
         "id": record.id,
         "sha256": record.sha256,
@@ -702,23 +810,23 @@ def upload_acquisition_file(
 
 
 @router.get("/acquisitions/{acq_id}/raw-preview")
-def preview_raw_csv(
+async def preview_raw_csv(
     acq_id: int,
     raw_file_id: int | None = None,
     header_row_override: int | None = Query(default=None, ge=0),
     data_start_marker: str = "DATA_START",
     max_lines: int = Query(default=20, ge=1, le=200),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst", "reviewer", "viewer")),
 ):
-    acq = db.get(Acquisition, acq_id)
+    acq = await db.get(Acquisition, acq_id)
     if not acq:
         raise HTTPException(status_code=404, detail="Acquisition not found")
-    q = db.query(RawFile).filter(RawFile.acquisition_id == acq_id, RawFile.file_kind == "raw_csv")
+    q = select(RawFile).where(RawFile.acquisition_id == acq_id, RawFile.file_kind == "raw_csv")
     if raw_file_id is not None:
-        raw_record = q.filter(RawFile.id == raw_file_id).first()
+        raw_record = (await db.execute(q.where(RawFile.id == raw_file_id))).scalar_one_or_none()
     else:
-        raw_record = q.order_by(RawFile.version_no.desc(), RawFile.created_at.desc()).first()
+        raw_record = (await db.execute(q.order_by(RawFile.version_no.desc(), RawFile.created_at.desc()))).scalars().first()
     if not raw_record:
         raise HTTPException(status_code=404, detail="No raw_csv file found for acquisition")
     content = Path(raw_record.storage_path).read_bytes()
@@ -742,16 +850,16 @@ def preview_raw_csv(
 
 
 @router.post("/acquisitions/{acq_id}/parse-preview")
-def parse_preview_raw_csv(
+async def parse_preview_raw_csv(
     acq_id: int,
     raw_file_id: int | None = None,
     header_row_override: int | None = Query(default=None, ge=0),
     data_start_marker: str = "DATA_START",
     max_lines: int = Query(default=20, ge=1, le=200),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst", "reviewer", "viewer")),
 ):
-    return preview_raw_csv(
+    return await preview_raw_csv(
         acq_id=acq_id,
         raw_file_id=raw_file_id,
         header_row_override=header_row_override,
@@ -763,25 +871,25 @@ def parse_preview_raw_csv(
 
 
 @router.post("/acquisitions/{acq_id}/raw-upload")
-def upload_raw_csv(
+async def upload_raw_csv(
     acq_id: int,
     parser_version: str,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
-    acq = db.get(Acquisition, acq_id)
+    acq = await db.get(Acquisition, acq_id)
     if not acq:
         raise HTTPException(status_code=404, detail="Acquisition not found")
-    data = file.file.read()
+    data = await file.read()
     try:
-        record, warning = register_raw_file(db, acq, parser_version, file.filename, Path(settings.data_root), data)
+        record, warning = await register_raw_file(db, acq, parser_version, file.filename, Path(settings.data_root), data)
     except DuplicateRawFileInAcquisitionError as exc:
         raise HTTPException(
             status_code=409,
             detail=f"{exc}. raw_file_id existente={exc.existing_file_id}",
         )
-    log_action(db, "raw_file", record.id, "create", user.id, notes="raw_csv")
+    await log_action(db, "raw_file", record.id, "create", user.id, notes="raw_csv")
     return {
         "id": record.id,
         "sha256": record.sha256,
@@ -792,21 +900,21 @@ def upload_raw_csv(
 
 
 @router.post("/acquisitions/{acq_id}/normalize")
-def normalize_acquisition(
+async def normalize_acquisition(
     acq_id: int,
     parser_version: str,
     raw_file_id: int | None = None,
     header_row_override: int | None = Query(default=None, ge=0),
     data_start_marker: str = "DATA_START",
     mapping: List[dict] = Body(...),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
-    acq = db.get(Acquisition, acq_id)
+    acq = await db.get(Acquisition, acq_id)
     if not acq:
         raise HTTPException(status_code=404, detail="Acquisition not found")
     try:
-        norm_record, channels, path = normalize_from_raw(
+        norm_record, channels, path = await normalize_from_raw(
             db=db,
             acq=acq,
             mapping=mapping,
@@ -818,7 +926,7 @@ def normalize_acquisition(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    log_action(db, "raw_file", norm_record.id, "create", user.id, notes="normalized_csv")
+    await log_action(db, "raw_file", norm_record.id, "create", user.id, notes="normalized_csv")
     return {
         "normalized_file_id": norm_record.id,
         "raw_file_id": norm_record.source_raw_file_id,
@@ -829,30 +937,32 @@ def normalize_acquisition(
 
 
 @router.post("/weighing-measurements", response_model=schemas.WeighingMeasurementOut)
-def create_weighing_measurement(
+async def create_weighing_measurement(
     payload: schemas.WeighingMeasurementCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
     if payload.measured_tension_tf <= 0:
         raise HTTPException(status_code=400, detail="measured_tension_tf must be > 0")
     wm = WeighingMeasurement(**payload.dict())
     db.add(wm)
-    db.commit()
-    db.refresh(wm)
-    log_action(db, "weighing_measurement", wm.id, "create", user.id)
+    await db.commit()
+    await db.refresh(wm)
+    await log_action(db, "weighing_measurement", wm.id, "create", user.id)
     return wm
 
 
 @router.get("/weighing-measurements", response_model=List[schemas.WeighingMeasurementOut])
-def list_weighing_measurements(db: Session = Depends(get_db)):
-    return db.query(WeighingMeasurement).order_by(WeighingMeasurement.weighing_campaign_id.desc()).all()
+async def list_weighing_measurements(db: AsyncSession = Depends(get_db)):
+    return (
+        await db.execute(select(WeighingMeasurement).order_by(WeighingMeasurement.weighing_campaign_id.desc()))
+    ).scalars().all()
 
 
 @router.post("/cable-config-snapshots", response_model=schemas.CableConfigSnapshotOut)
-def create_snapshot(
+async def create_snapshot(
     payload: schemas.CableConfigSnapshotCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
     if payload.strands_active > payload.strands_total:
@@ -861,59 +971,61 @@ def create_snapshot(
         raise HTTPException(status_code=400, detail="effective_length_m and mu_value_kg_m must be > 0")
     snap = CableConfigSnapshot(**payload.dict())
     db.add(snap)
-    db.commit()
-    db.refresh(snap)
-    log_action(db, "cable_config_snapshot", snap.id, "create", user.id)
+    await db.commit()
+    await db.refresh(snap)
+    await log_action(db, "cable_config_snapshot", snap.id, "create", user.id)
     return snap
 
 
 @router.get("/cable-config-snapshots", response_model=List[schemas.CableConfigSnapshotOut])
-def list_snapshots(cable_id: int | None = None, db: Session = Depends(get_db)):
-    q = db.query(CableConfigSnapshot)
+async def list_snapshots(cable_id: int | None = None, db: AsyncSession = Depends(get_db)):
+    q = select(CableConfigSnapshot)
     if cable_id:
-        q = q.filter(CableConfigSnapshot.cable_id == cable_id)
-    return q.order_by(CableConfigSnapshot.created_at.desc()).all()
+        q = q.where(CableConfigSnapshot.cable_id == cable_id)
+    return (await db.execute(q.order_by(CableConfigSnapshot.created_at.desc()))).scalars().all()
 
 
 @router.post("/k-calibrations", response_model=schemas.KCalibrationOut)
-def create_k_calibration(
+async def create_k_calibration(
     payload: schemas.KCalibrationCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
     if payload.k_value <= 0:
         raise HTTPException(status_code=400, detail="k_value must be > 0")
     if payload.valid_to and payload.valid_to <= payload.valid_from:
         raise HTTPException(status_code=400, detail="valid_to must be greater than valid_from")
-    existing = db.query(KCalibration).filter(KCalibration.cable_id == payload.cable_id).all()
+    existing = (
+        await db.execute(select(KCalibration).where(KCalibration.cable_id == payload.cable_id))
+    ).scalars().all()
     candidate = KCalibration(**payload.dict())
     validate_k_no_overlap(existing, candidate)
     db.add(candidate)
-    db.commit()
-    db.refresh(candidate)
-    log_action(db, "k_calibration", candidate.id, "create", user.id)
+    await db.commit()
+    await db.refresh(candidate)
+    await log_action(db, "k_calibration", candidate.id, "create", user.id)
     return candidate
 
 
 @router.get("/k-calibrations", response_model=List[schemas.KCalibrationOut])
-def list_k_calibrations(cable_id: int | None = None, db: Session = Depends(get_db)):
-    q = db.query(KCalibration)
+async def list_k_calibrations(cable_id: int | None = None, db: AsyncSession = Depends(get_db)):
+    q = select(KCalibration)
     if cable_id:
-        q = q.filter(KCalibration.cable_id == cable_id)
-    return q.order_by(KCalibration.valid_from.desc()).all()
+        q = q.where(KCalibration.cable_id == cable_id)
+    return (await db.execute(q.order_by(KCalibration.valid_from.desc()))).scalars().all()
 
 
 @router.post("/weighing-campaigns/{campaign_id}/attachment")
-def upload_weighing_attachment(
+async def upload_weighing_attachment(
     campaign_id: int,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles("admin", "analyst")),
 ):
-    wc = db.get(WeighingCampaign, campaign_id)
+    wc = await db.get(WeighingCampaign, campaign_id)
     if not wc:
         raise HTTPException(status_code=404, detail="Weighing campaign not found")
-    data = file.file.read()
+    data = await file.read()
     path, digest = save_upload(Path(settings.data_root), "attachments", file.filename, data)
     attach = WeighingAttachment(
         weighing_campaign_id=campaign_id,
@@ -922,32 +1034,64 @@ def upload_weighing_attachment(
         sha256=digest,
     )
     db.add(attach)
-    db.commit()
-    db.refresh(attach)
-    log_action(db, "weighing_attachment", attach.id, "create", user.id)
+    await db.commit()
+    await db.refresh(attach)
+    await log_action(db, "weighing_attachment", attach.id, "create", user.id)
     return {"id": attach.id, "sha256": digest, "path": attach.storage_path}
 
 
+@router.get("/cables/{cable_id}/anomalies", response_model=schemas.AnomaliesResponse)
+async def cable_anomalies(
+    cable_id: int,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    z_threshold: float = Query(default=2.5, gt=0.0, le=10.0),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_roles("admin", "analyst", "reviewer", "viewer")),
+):
+    """Detecta valores atípicos en el historial de análisis de un tirante.
+
+    Usa z-score sobre tensión calculada y frecuencia fundamental.
+    Un resultado se marca como anomalía si alguna de sus métricas supera z_threshold.
+    Requiere al menos 3 resultados para estadísticas significativas.
+    """
+    cable = await db.get(Cable, cable_id)
+    if not cable:
+        raise HTTPException(status_code=404, detail="Cable not found")
+
+    result = await detect_anomalies(
+        db=db,
+        cable_id=cable_id,
+        cable_name=cable.nombre_en_puente,
+        date_from=date_from,
+        date_to=date_to,
+        z_threshold=z_threshold,
+    )
+    return result
+
+
 @router.get("/bridges/{bridge_id}/semaforo", response_model=schemas.SemaforoResponse)
-def semaforo(bridge_id: int, acquisition_id: int, top_n: int | None = Query(None, gt=0), db: Session = Depends(get_db)):
-    acq = db.get(Acquisition, acquisition_id)
+async def semaforo(bridge_id: int, acquisition_id: int, top_n: int | None = Query(None, gt=0), db: AsyncSession = Depends(get_db)):
+    acq = await db.get(Acquisition, acquisition_id)
     if not acq:
         raise HTTPException(status_code=404, detail="Acquisition not found")
 
-    rows = (
-        db.query(AnalysisResult, Cable)
+    stmt = (
+        select(AnalysisResult, Cable)
         .join(AnalysisRun, AnalysisResult.analysis_run_id == AnalysisRun.id)
         .join(Cable, Cable.id == AnalysisResult.cable_id)
-        .filter(AnalysisRun.acquisition_id == acquisition_id, Cable.bridge_id == bridge_id)
-        .all()
+        .where(AnalysisRun.acquisition_id == acquisition_id, Cable.bridge_id == bridge_id)
     )
+    rows = (await db.execute(stmt)).all()
     if not rows:
         return schemas.SemaforoResponse(bridge_id=bridge_id, acquisition_id=acquisition_id, total=0, exceden=0, items=[])
 
     items = []
     exceden = 0
     for res, cable in rows:
-        states: List[CableStateVersion] = db.query(CableStateVersion).filter(CableStateVersion.cable_id == cable.id).all()
+        states = (
+            await db.execute(select(CableStateVersion).where(CableStateVersion.cable_id == cable.id))
+        ).scalars().all()
         if not states:
             continue
         state_selected = select_cable_state_version(states, acq.acquired_at)

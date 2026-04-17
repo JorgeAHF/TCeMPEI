@@ -183,10 +183,47 @@ class AnalysisResultOut(AnalysisResultCreate):
     k_used_value: float
     k_used_calibration_id: int
     tension_tf: float
+    is_approved: bool
+    approved_by_user_id: Optional[int]
+    approved_at: Optional[datetime]
     created_at: datetime
 
     class Config:
         orm_mode = True
+
+
+class AnalysisResultApproveResponse(BaseModel):
+    id: int
+    is_approved: bool
+    approved_by_user_id: Optional[int]
+    approved_at: Optional[datetime]
+    previously_unapproved_ids: List[int]
+
+    class Config:
+        orm_mode = True
+
+
+class AnomalyItem(BaseModel):
+    analysis_result_id: int
+    cable_id: int
+    nombre_en_puente: str
+    acquired_at: datetime
+    f0_hz: float
+    tension_tf: float
+    quality_flag: str
+    is_approved: bool
+    zscore_tension: float
+    zscore_f0: float
+    is_anomaly: bool
+    anomaly_reason: Optional[str]
+
+
+class AnomaliesResponse(BaseModel):
+    cable_id: int
+    n_results: int
+    n_anomalies: int
+    z_threshold: float
+    items: List[AnomalyItem]
 
 
 class AnalysisPreviewRequest(BaseModel):

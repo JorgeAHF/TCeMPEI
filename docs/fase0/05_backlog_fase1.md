@@ -15,7 +15,7 @@
 
 ### EPIC F1-01 Plataforma Docker y configuracion
 - US-01: Como desarrollador quiero levantar entorno completo con un solo comando.
-- US-02: Como equipo quiero healthchecks para db/backend/dash.
+- US-02: Como equipo quiero healthchecks para db/backend/frontend.
 - US-03: Como operador quiero variables de entorno claras por entorno (dev/qa/prod).
 - Tareas:
 - Definir archivos compose por entorno.

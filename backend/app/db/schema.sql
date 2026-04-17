@@ -40,8 +40,8 @@ CREATE TABLE IF NOT EXISTS strand_types (
     nombre TEXT NOT NULL,
     diametro_mm DOUBLE PRECISION NOT NULL CHECK (diametro_mm > 0),
     area_mm2 DOUBLE PRECISION NOT NULL CHECK (area_mm2 > 0),
-    E_MPa DOUBLE PRECISION NOT NULL CHECK (E_MPa > 0),
-    Fu_default DOUBLE PRECISION NOT NULL CHECK (Fu_default > 0),
+    e_mpa DOUBLE PRECISION NOT NULL CHECK (e_mpa > 0),
+    fu_default DOUBLE PRECISION NOT NULL CHECK (fu_default > 0),
     mu_por_toron_kg_m DOUBLE PRECISION NOT NULL CHECK (mu_por_toron_kg_m > 0),
     notas TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -72,11 +72,11 @@ CREATE TABLE IF NOT EXISTS cable_state_versions (
     strand_type_id BIGINT NOT NULL REFERENCES strand_types(id),
     diametro_mm DOUBLE PRECISION NOT NULL CHECK (diametro_mm > 0),
     area_mm2 DOUBLE PRECISION NOT NULL CHECK (area_mm2 > 0),
-    E_MPa DOUBLE PRECISION NOT NULL CHECK (E_MPa > 0),
+    e_mpa DOUBLE PRECISION NOT NULL CHECK (e_mpa > 0),
     mu_total_kg_m DOUBLE PRECISION NOT NULL CHECK (mu_total_kg_m > 0),
     mu_active_basis_kg_m DOUBLE PRECISION NOT NULL CHECK (mu_active_basis_kg_m > 0),
     design_tension_tf DOUBLE PRECISION NOT NULL CHECK (design_tension_tf > 0),
-    Fu_override DOUBLE PRECISION,
+    fu_override DOUBLE PRECISION,
     antivandalic_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     antivandalic_length_m DOUBLE PRECISION CHECK (antivandalic_length_m > 0),
     source TEXT,
@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS acquisitions (
     bridge_id BIGINT NOT NULL REFERENCES bridges(id) ON DELETE CASCADE,
     acquired_at TIMESTAMPTZ NOT NULL,
     operator_user_id BIGINT REFERENCES users(id),
-    Fs_Hz DOUBLE PRECISION NOT NULL CHECK (Fs_Hz > 0),
+    fs_hz DOUBLE PRECISION NOT NULL CHECK (fs_hz > 0),
     notes TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_by_user_id BIGINT REFERENCES users(id)
@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS weighing_campaigns (
     performed_by TEXT NOT NULL,
     method TEXT NOT NULL,
     equipment TEXT NOT NULL,
-    temperature_C DOUBLE PRECISION,
+    temperature_c DOUBLE PRECISION,
     notes TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_by_user_id BIGINT REFERENCES users(id)
@@ -200,7 +200,7 @@ CREATE TABLE IF NOT EXISTS weighing_measurements (
     weighing_campaign_id BIGINT NOT NULL REFERENCES weighing_campaigns(id) ON DELETE CASCADE,
     cable_id BIGINT NOT NULL REFERENCES cables(id),
     measured_tension_tf DOUBLE PRECISION NOT NULL CHECK (measured_tension_tf > 0),
-    measured_temperature_C DOUBLE PRECISION,
+    measured_temperature_c DOUBLE PRECISION,
     notes TEXT
 );
 
@@ -281,6 +281,9 @@ CREATE TABLE IF NOT EXISTS analysis_results (
     df_hz DOUBLE PRECISION,
     snr_metric DOUBLE PRECISION,
     quality_flag TEXT NOT NULL CHECK (quality_flag IN ('ok','doubtful','bad')),
+    is_approved BOOLEAN NOT NULL DEFAULT FALSE,
+    approved_by_user_id BIGINT REFERENCES users(id),
+    approved_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

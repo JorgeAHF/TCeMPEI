@@ -35,7 +35,7 @@
 
 ## 7. Arquitectura y restricciones tecnicas
 - Backend API: FastAPI.
-- Frontend tecnico: Dash.
+- Frontend tecnico: React + Vite.
 - Base de datos: PostgreSQL (sin SQLite para flujos de app).
 - Infraestructura: Docker Compose en dev/qa/prod.
 - Toda la informacion de negocio debe persistir en PostgreSQL.

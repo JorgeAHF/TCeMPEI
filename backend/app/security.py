@@ -2,12 +2,11 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import uuid4
 
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError
 from passlib.context import CryptContext
 
 from .config import get_settings
-from .models import User
-from .db import SessionLocal
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 settings = get_settings()
@@ -45,10 +44,7 @@ def decode_token(token: str, expected_type: str = "access") -> dict:
     payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
     token_type = payload.get("typ")
     if token_type != expected_type:
-        raise JWTError("Invalid token type")
+        raise InvalidTokenError("Invalid token type")
     return payload
 
 
-def get_user_by_id(user_id: int) -> Optional[User]:
-    with SessionLocal() as db:
-        return db.get(User, user_id)
